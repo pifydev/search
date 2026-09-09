@@ -45,7 +45,13 @@ export function formatStatus(engine: SearchEngine | null, root: string): string 
     return "No search engine is running. fffind and ffgrep will start one on first use.";
   }
   const lines = [
-    `Engine: ${engine.name === "fff" ? "fff (native index, live watcher)" : "builtin (pure TypeScript, no native binary)"}`,
+    `Engine: ${
+      engine.name === "native"
+        ? "native (this package's Rust core)"
+        : engine.name === "fff"
+          ? "fff (@ff-labs/fff-node)"
+          : "builtin (pure TypeScript, no native binary)"
+    }`,
     `Root:   ${root}`,
   ];
   const count = engine.indexed?.();

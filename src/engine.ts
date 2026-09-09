@@ -1,21 +1,23 @@
 /**
- * The two engines, behind one shape.
+ * Three engines, behind one shape.
  *
- * The fast path is the real thing: `@ff-labs/fff-node`, a Rust index with a
- * live watcher, typo-resistant matching, git status and frecency built in. It
- * scans this whole suite in about 80ms and is not something worth
- * reimplementing.
+ * **native** — this package's own Rust core, compiled per platform. It indexes
+ * this suite (417 files) in about 33ms, and a literal search then reads the 5
+ * files the trigram index says could match rather than all 417.
  *
- * The slow path exists because a native binary is a promise you cannot always
- * keep. An unsupported platform, a locked-down install, a postinstall that
- * never ran — any of those and a binary-only search extension is an extension
- * that does nothing. The fallback is pure TypeScript with no dependencies: a
- * trigram index for content, a fuzzy scorer for paths. It is slower, and it
- * works everywhere pi does.
+ * **fff** — `@ff-labs/fff-node`, used when it is installed and the native core
+ * is not. A mature engine with its own watcher and git integration.
  *
- * Both answer the same questions, so the tools never learn which one they got.
- * `/search` says which is live, because a user comparing timings deserves to
- * know why.
+ * **builtin** — pure TypeScript, no dependencies, no binary. It exists because
+ * a native binary is a promise you cannot always keep: an unsupported
+ * platform, a locked-down install, a postinstall that never ran. A
+ * binary-only search extension in any of those cases is one that silently does
+ * nothing.
+ *
+ * All three answer the same questions, so the tools never learn which one they
+ * got. The scoring constants are shared deliberately between the native core
+ * and the fallback, so losing the binary changes how fast a search is and not
+ * how it is ordered. `/search` says which engine is live.
  */
 
 export interface FileHit {
@@ -54,13 +56,16 @@ export interface GrepOptions extends FindOptions {
 }
 
 export interface SearchEngine {
-  readonly name: "fff" | "builtin";
+  readonly name: "native" | "fff" | "builtin";
   /** Resolve once the first index build has landed. */
   ready(timeoutMs: number): Promise<boolean>;
   find(query: string, options?: FindOptions): Promise<Page<FileHit>>;
   grep(pattern: string, options?: GrepOptions): Promise<Page<ContentHit>>;
   /** Note that a path was used, so frecency can favour it later. */
   touch?(path: string): void;
+  /** Re-read one path after a change, when the engine can. */
+  refresh?(path: string): void;
+  forget?(path: string): void;
   dispose(): void;
   /** How many files the index holds, when the engine can say. */
   indexed?(): number;

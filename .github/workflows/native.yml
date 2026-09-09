@@ -1,0 +1,105 @@
+name: Native
+
+# Builds the Rust core for every supported platform and publishes one npm
+# package per platform, in the napi convention. @pify/search lists them as
+# optional dependencies, so a platform without a build falls back rather than
+# failing to install.
+#
+# Only win32-x64 is built and verified on the maintainer's machine; every other
+# target is first proven here.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+  pull_request:
+    paths: ["native/**", ".github/workflows/native.yml"]
+
+permissions: {}
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - host: windows-latest
+            target: x86_64-pc-windows-msvc
+            triple: win32-x64
+            artifact: pify_search_core.dll
+          - host: windows-latest
+            target: aarch64-pc-windows-msvc
+            triple: win32-arm64
+            artifact: pify_search_core.dll
+          - host: macos-latest
+            target: x86_64-apple-darwin
+            triple: darwin-x64
+            artifact: libpify_search_core.dylib
+          - host: macos-latest
+            target: aarch64-apple-darwin
+            triple: darwin-arm64
+            artifact: libpify_search_core.dylib
+          - host: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            triple: linux-x64
+            artifact: libpify_search_core.so
+          - host: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            triple: linux-arm64
+            artifact: libpify_search_core.so
+    runs-on: ${{ matrix.host }}
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Install cross linker
+        if: matrix.triple == 'linux-arm64'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
+      - name: Build
+        working-directory: native
+        run: cargo build --release --target ${{ matrix.target }}
+      - name: Stage the addon
+        shell: bash
+        run: |
+          cp "native/target/${{ matrix.target }}/release/${{ matrix.artifact }}" \
+             "pify-search.${{ matrix.triple }}.node"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.triple }}
+          path: pify-search.${{ matrix.triple }}.node
+          if-no-files-found: error
+
+  smoke:
+    # A binary that builds is not a binary that loads. Every target that can
+    # run on a hosted runner is exercised before it is published.
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - host: windows-latest
+            triple: win32-x64
+          - host: macos-latest
+            triple: darwin-arm64
+          - host: ubuntu-latest
+            triple: linux-x64
+    runs-on: ${{ matrix.host }}
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ matrix.triple }}
+      - name: Load and search
+        shell: bash
+        run: node native/smoke.mjs .

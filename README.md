@@ -33,15 +33,27 @@ The other half is the shape of the question. `find` wants a glob; people want *"
 
 Three modes because three different questions get asked: the exact string, a shape, and *"something like this"* for when you do not know how it is spelled.
 
-## Two engines, one interface
+## Three engines, one interface
 
-**Fast path** — [`@ff-labs/fff-node`](https://github.com/dmtrKovalenko/fff), a Rust index with a live file watcher, typo-resistant matching, git status and frecency. It scans this whole suite in about 80ms. Installed as an *optional* dependency: if the platform binary lands, it is used.
+**native** — this package's own Rust core, `native/`, built with napi. It indexes this suite (417 files) in **33ms**, and a literal search then reads the **5** files the trigram index says could match rather than all 417. Searches come back in about a millisecond.
 
-**Fallback** — pure TypeScript, no dependencies. A trigram index for content, a fuzzy scorer for paths, an `fs.watch` subscription to stay current. Slower, and it runs wherever pi runs.
+**fff** — [`@ff-labs/fff-node`](https://github.com/dmtrKovalenko/fff), used when it is installed and the native core is not. A mature engine with its own watcher and git integration.
 
-The fallback is the point. A native binary is a promise you cannot always keep: an unsupported platform, a locked-down install, a blocked postinstall — any of those, and a binary-only search extension is one that silently does nothing. `/search` says which engine is live.
+**builtin** — pure TypeScript, no dependencies, no binary. A trigram index for content, a fuzzy scorer for paths, an `fs.watch` subscription to stay current.
 
-Both are checked against each other on a real tree (`test/live/engines.mjs`, 21/21): the same files found, the same literal matches, the same refusal to search `node_modules`, and cursors that advance rather than repeat.
+The fallback is the point. A native binary is a promise you cannot always keep: an unsupported platform, a locked-down install, a blocked postinstall — any of those, and a binary-only search extension is one that silently does nothing.
+
+All three are checked against each other on a real tree (`test/live/engines.mjs`, **33/33**): the same files found, the same literal matches, the same refusal to search `node_modules`, cursors that advance rather than repeat — and native and builtin **rank identically**, because they share their scoring constants on purpose. Losing the binary should change how fast a search is, never how it is ordered. `/search` says which engine is live.
+
+### Building the native core
+
+```bash
+npm run build:native      # cargo build --release --manifest-path native/Cargo.toml
+```
+
+The result is picked up automatically from `native/target/release/`. CI builds and smoke-tests six targets — win32 x64/arm64, darwin x64/arm64, linux x64/arm64 — on every tag.
+
+**Honest status:** only `win32-x64` has been built and verified by hand; the other five are proven by CI and nothing more. Per-platform npm packages (`@pify/search-<triple>`) are not published yet, so an installed copy of this package uses fff if you have it and the TypeScript engine otherwise. The loader already looks for them, so publishing is additive.
 
 ## How the content index works
 

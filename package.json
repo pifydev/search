@@ -30,6 +30,9 @@
     "extensions",
     "src",
     "skills",
+    "native/src",
+    "native/Cargo.toml",
+    "native/build.rs",
     "README.md",
     "LICENSE"
   ],
@@ -44,7 +47,8 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "bun test",
-    "prepublishOnly": "npm run typecheck && npm test"
+    "prepublishOnly": "npm run typecheck && npm test",
+    "build:native": "cargo build --release --manifest-path native/Cargo.toml"
   },
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",

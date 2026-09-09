@@ -30,6 +30,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 import { loadFff, type SearchEngine } from "../src/engine.ts";
+import { loadNative } from "../src/native.ts";
 import { builtinEngine } from "../src/builtin.ts";
 import { parseHistory, pruneHistory, type History } from "../src/frecency.ts";
 import { formatFiles, formatMatches, formatStatus } from "../src/format.ts";
@@ -73,7 +74,9 @@ export default function searchExtension(pi: ExtensionAPI) {
       root = ctx.cwd;
       historyFile = historyPath(ctx.cwd);
       starting = (async () => {
-        const fast = await loadFff(root);
+        // Preference order: this package's own core, then fff if the user
+        // has it, then the fallback that always works.
+        const fast = loadNative(root) ?? (await loadFff(root));
         const chosen =
           fast ?? builtinEngine(root, { history: loadHistory(), onHistoryChange: saveHistory });
         await chosen.ready(READY_TIMEOUT_MS);
@@ -156,8 +159,19 @@ export default function searchExtension(pi: ExtensionAPI) {
     const name = (event as { toolName?: string }).toolName;
     if (name !== "read" && name !== "edit" && name !== "write") return undefined;
     const path = (event as { input?: { path?: unknown } }).input?.path;
-    if (typeof path === "string" && engine?.touch) engine.touch(path);
+    if (typeof path === "string") engine?.touch?.(path);
     return undefined;
+  });
+
+  pi.on("tool_result", async (event) => {
+    // The agent just changed a file, so the index is stale for it. Re-reading
+    // one path is cheap; noticing later that a search missed a line the agent
+    // itself wrote is not.
+    const name = (event as { toolName?: string }).toolName;
+    if (name !== "edit" && name !== "write") return;
+    if ((event as { isError?: boolean }).isError === true) return;
+    const path = (event as { input?: Record<string, unknown> }).input?.path;
+    if (typeof path === "string") engine?.refresh?.(path);
   });
 
   // ── Lifecycle ────────────────────────────────────────────────────────

@@ -18,6 +18,7 @@ import { join } from "node:path";
 
 import { builtinEngine } from "../../src/builtin.ts";
 import { loadFff } from "../../src/engine.ts";
+import { loadNative } from "../../src/native.ts";
 
 const NL = String.fromCharCode(10);
 let passed = 0;
@@ -47,11 +48,16 @@ try {
   await builtin.ready(20_000);
   const fff = await loadFff(root);
   if (fff) await fff.ready(20_000);
+  const native = loadNative(root);
+  if (native) await native.ready(20_000);
 
-  console.log(`engines: builtin${fff ? " + fff" : " only (fff unavailable here)"}`);
+  const engines = [
+    ["builtin", builtin],
+    ...(native ? [["native", native]] : []),
+    ...(fff ? [["fff", fff]] : []),
+  ];
+  console.log(`engines: ${engines.map(([n]) => n).join(", ")}`);
   console.log(`builtin indexed ${builtin.indexed?.()} files${NL}`);
-
-  const engines = [["builtin", builtin], ...(fff ? [["fff", fff]] : [])];
 
   for (const [name, engine] of engines) {
     const found = await engine.find("auth", { limit: 10 });
@@ -94,20 +100,33 @@ try {
   }
 
   // The claim the whole package rests on: a tool cannot tell them apart.
-  if (fff) {
-    const a = new Set((await builtin.grep("SENTINEL_TOKEN", { mode: "literal", limit: 50 })).items.map((i) => `${i.path}:${i.line}`));
-    const b = new Set((await fff.grep("SENTINEL_TOKEN", { mode: "literal", limit: 50 })).items.map((i) => `${i.path}:${i.line}`));
-    const onlyA = [...a].filter((x) => !b.has(x));
-    const onlyB = [...b].filter((x) => !a.has(x));
-    check(
-      "both engines return the same literal matches",
-      onlyA.length === 0 && onlyB.length === 0,
-      `builtin-only: ${onlyA.join(",") || "none"} · fff-only: ${onlyB.join(",") || "none"}`,
+  const baseline = new Set(
+    (await builtin.grep("SENTINEL_TOKEN", { mode: "literal", limit: 50 })).items.map((i) => `${i.path}:${i.line}`),
+  );
+  for (const [name, engine] of engines.slice(1)) {
+    const other = new Set(
+      (await engine.grep("SENTINEL_TOKEN", { mode: "literal", limit: 50 })).items.map((i) => `${i.path}:${i.line}`),
     );
+    const onlyBuiltin = [...baseline].filter((x) => !other.has(x));
+    const onlyOther = [...other].filter((x) => !baseline.has(x));
+    check(
+      `${name} returns the same literal matches as builtin`,
+      onlyBuiltin.length === 0 && onlyOther.length === 0,
+      `builtin-only: ${onlyBuiltin.join(",") || "none"} · ${name}-only: ${onlyOther.join(",") || "none"}`,
+    );
+  }
+
+  // The ranking constants are shared on purpose: losing the binary should
+  // change how fast a search is, never how it is ordered.
+  if (native) {
+    const a = (await builtin.find("auth", { limit: 5 })).items.map((i) => i.path);
+    const b = (await native.find("auth", { limit: 5 })).items.map((i) => i.path);
+    check("native and builtin rank the same way", JSON.stringify(a) === JSON.stringify(b), `${a.join(",")} vs ${b.join(",")}`);
   }
 
   builtin.dispose();
   fff?.dispose();
+  native?.dispose();
 } finally {
   rmSync(root, { recursive: true, force: true });
 }
