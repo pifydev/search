@@ -9,6 +9,7 @@
 #![deny(clippy::all)]
 
 mod score;
+mod store;
 mod trigram;
 mod walk;
 
@@ -67,6 +68,9 @@ pub struct SearchIndex {
     by_path: RwLock<HashMap<String, u32>>,
     content: RwLock<Index>,
     frecency: RwLock<HashMap<String, i32>>,
+    cache: Option<PathBuf>,
+    reused: u32,
+    rebuilt: u32,
 }
 
 #[napi]
@@ -74,10 +78,23 @@ impl SearchIndex {
     /// Build the index. Walking and content extraction run in parallel;
     /// nothing is memory-mapped, so this behaves the same on every platform.
     #[napi(constructor)]
-    pub fn new(root: String, max_files: Option<u32>) -> Result<Self> {
+    pub fn new(root: String, max_files: Option<u32>, cache_path: Option<String>) -> Result<Self> {
         let root_path = PathBuf::from(&root);
         let cap = max_files.unwrap_or(200_000) as usize;
+        let t0 = std::time::Instant::now();
         let found = walk::collect(&root_path, cap);
+        let t_walk = t0.elapsed();
+
+        // Anything the last run already extracted and that still looks the
+        // same on disk is reused; only genuinely changed files are re-read.
+        // That is the whole point of persisting — a session on a large tree
+        // should pay for what changed, not for the tree.
+        let cache = cache_path.as_ref().map(PathBuf::from);
+        let t1 = std::time::Instant::now();
+        let loaded = cache.as_ref().and_then(|p| store::load(p));
+        let t_load = t1.elapsed();
+        let had_cache = loaded.is_some();
+        let mut known = loaded.map(store::index_by_path).unwrap_or_default();
 
         let mut entries = Vec::with_capacity(found.len());
         let mut by_path = HashMap::with_capacity(found.len());
@@ -91,13 +108,25 @@ impl SearchIndex {
             });
         }
 
+        let mut reused = 0usize;
+        let mut carried: Vec<(u32, Vec<u32>)> = Vec::new();
+        let mut stale: Vec<(u32, &walk::Found)> = Vec::new();
+        for (i, file) in found.iter().enumerate() {
+            match known.remove(&file.rel) {
+                Some(entry) if store::still_valid(&entry, file.size, file.mtime_ms) => {
+                    reused += 1;
+                    carried.push((i as u32, entry.trigrams));
+                }
+                _ => stale.push((i as u32, file)),
+            }
+        }
+
         // Reading and extracting is the expensive half and is embarrassingly
         // parallel; building the map from the results is not, so it is done
         // once at the end rather than behind a lock per file.
-        let extracted: Vec<(u32, Vec<u32>)> = found
+        let extracted: Vec<(u32, Vec<u32>)> = stale
             .par_iter()
-            .enumerate()
-            .filter_map(|(i, file)| {
+            .filter_map(|(id, file)| {
                 if !walk::index_content(&file.rel, file.size) {
                     return None;
                 }
@@ -109,22 +138,93 @@ impl SearchIndex {
                 trigram::extract(&bytes, &mut set);
                 let mut list: Vec<u32> = set.into_iter().collect();
                 list.sort_unstable();
-                Some((i as u32, list))
+                Some((*id, list))
             })
             .collect();
 
+        // Merged and sorted by id before insertion, which is not cosmetic:
+        // posting lists are kept sorted, so adding files in ascending order
+        // appends to each list, while the interleaved order that `carried` and
+        // `extracted` arrive in would insert into the middle and memmove the
+        // tail of every list it touches.
+        let rebuilt = extracted.len() as u32;
+        let mut all: Vec<(u32, Vec<u32>)> = carried;
+        all.extend(extracted);
+        all.sort_unstable_by_key(|(id, _)| *id);
+
+        let t2 = std::time::Instant::now();
         let mut index = Index::new();
-        for (id, trigrams) in &extracted {
+        for (id, trigrams) in &all {
             index.add(*id, trigrams);
         }
+        let t_index = t2.elapsed();
+        // Off unless asked for. The three phases have very different costs and
+        // guessing which one dominates is how the first version of this spent
+        // most of its time rebuilding an index it had just loaded.
+        if std::env::var_os("PIFY_SEARCH_TIMING").is_some() {
+            eprintln!("  walk {t_walk:?}  load {t_load:?}  invert {t_index:?}");
+        }
 
-        Ok(Self {
+        // Rewriting an unchanged index costs a full re-inversion and a
+        // multi-megabyte write on every start, which on a large tree is most
+        // of what reloading was supposed to save. Write only when the tree
+        // actually moved: something re-read, something gone, or no cache yet.
+        let vanished = !known.is_empty();
+        let dirty = !had_cache || rebuilt > 0 || vanished;
+
+        let this = Self {
             root: root_path,
             entries: RwLock::new(entries),
             by_path: RwLock::new(by_path),
             content: RwLock::new(index),
             frecency: RwLock::new(HashMap::new()),
-        })
+            cache,
+            reused: reused as u32,
+            rebuilt,
+        };
+        if dirty {
+            this.persist();
+        }
+        Ok(this)
+    }
+
+    /// Write the index back, best effort. A cache that cannot be written costs
+    /// the next session a rebuild, never this one a result.
+    fn persist(&self) {
+        let Some(path) = self.cache.as_ref() else { return };
+        let (Ok(entries), Ok(index)) = (self.entries.read(), self.content.read()) else {
+            return;
+        };
+        let mut by_file = index.by_file();
+        let mut files = Vec::with_capacity(by_file.len());
+        for (id, entry) in entries.iter().enumerate() {
+            if let Some(trigrams) = by_file.remove(&(id as u32)) {
+                files.push(store::StoredFile {
+                    rel: entry.path.clone(),
+                    size: entry.size,
+                    mtime_ms: entry.mtime_ms,
+                    trigrams,
+                });
+            }
+        }
+        let _ = store::save(path, &files);
+    }
+
+    /// How much of the last index survived, so the saving is observable.
+    #[napi]
+    pub fn reused_count(&self) -> u32 {
+        self.reused
+    }
+
+    #[napi]
+    pub fn rebuilt_count(&self) -> u32 {
+        self.rebuilt
+    }
+
+    /// Flush the index to its cache file.
+    #[napi]
+    pub fn save(&self) {
+        self.persist();
     }
 
     #[napi]

@@ -103,3 +103,11 @@ jobs:
       - name: Load and search
         shell: bash
         run: node native/smoke.mjs .
+
+      # The stored index is where a platform difference would actually bite:
+      # mtime resolution, path separators and atomic rename all vary, and a
+      # cache that silently never validates would look like a working — merely
+      # slow — search. This fails loudly instead.
+      - name: Reload a stored index
+        shell: bash
+        run: node native/persist.mjs .

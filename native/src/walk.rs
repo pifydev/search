@@ -27,6 +27,7 @@ const BINARY_EXTENSIONS: &[&str] = &[
     "woff2", "eot", "db", "sqlite", "sqlite3", "pack", "idx",
 ];
 
+#[derive(Debug)]
 pub struct Found {
     pub rel: String,
     pub absolute: PathBuf,

@@ -111,9 +111,18 @@ impl Index {
         for &t in trigrams {
             let list = self.postings.entry(t).or_default();
             // Postings stay sorted so intersection is a merge, not a scan.
-            match list.binary_search(&file) {
-                Ok(_) => {}
-                Err(at) => list.insert(at, file),
+            //
+            // Bulk builds add files in ascending id order, so the new id
+            // belongs at the end and one comparison settles it. Falling
+            // through to a binary search here would cost fifteen scattered
+            // probes on a list held by every file — which measured as most of
+            // the time spent building the index.
+            match list.last() {
+                Some(&last) if last >= file => match list.binary_search(&file) {
+                    Ok(_) => {}
+                    Err(at) => list.insert(at, file),
+                },
+                _ => list.push(file),
             }
         }
         self.indexed.insert(file);
@@ -129,6 +138,30 @@ impl Index {
             }
             !list.is_empty()
         });
+    }
+
+    /// The index turned back the other way up: every trigram, grouped by the
+    /// file it came from, for writing the index out.
+    ///
+    /// One pass over the postings rather than one pass *per file* — asking each
+    /// file separately would rescan the entire index for every file, which on a
+    /// large tree is quadratic and would cost more than rebuilding from source.
+    pub fn by_file(&self) -> HashMap<u32, Vec<Trigram>> {
+        let mut out: HashMap<u32, Vec<Trigram>> = HashMap::with_capacity(self.indexed.len());
+        for &file in &self.indexed {
+            out.insert(file, Vec::new());
+        }
+        for (&t, files) in &self.postings {
+            for file in files {
+                if let Some(list) = out.get_mut(file) {
+                    list.push(t);
+                }
+            }
+        }
+        for list in out.values_mut() {
+            list.sort_unstable();
+        }
+        out
     }
 
     /// Candidate file ids, or `None` meaning every file must be read.

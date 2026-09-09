@@ -35,7 +35,7 @@ Three modes because three different questions get asked: the exact string, a sha
 
 ## Three engines, one interface
 
-**native** — this package's own Rust core, `native/`, built with napi. It indexes this suite (417 files) in **33ms**, and a literal search then reads the **5** files the trigram index says could match rather than all 417. Searches come back in about a millisecond.
+**native** — this package's own Rust core, `native/`, built with napi. It indexes this suite (417 files) in about **40ms** cold, and a literal search then reads the **5** files the trigram index says could match rather than all 417. Searches come back in about a millisecond. Its index is [stored between sessions](#the-index-survives-the-process), so the second start does not pay for the first.
 
 **fff** — [`@ff-labs/fff-node`](https://github.com/dmtrKovalenko/fff), used when it is installed and the native core is not. A mature engine with its own watcher and git integration.
 
@@ -61,6 +61,32 @@ Every overlapping three-byte window of every text file is a *trigram*, packed in
 
 The index only ever **narrows**; every surviving candidate is still matched for real, so a wrong candidate costs time and never correctness. The rule that makes it safe: a pattern with nothing indexable — `\d+`, a fuzzy query, one branch of an alternation that could match anywhere — reports "no candidate set is safe" and everything is read. Confusing *that* with "nothing matched" is how an index starts silently hiding results, so the two are different values throughout.
 
+## The index survives the process
+
+An index rebuilt at every start is one you pay for at every start. The native engine writes its index to disk and, next time, reloads it and reconciles instead of re-reading the tree.
+
+Measured on a synthetic 20,000-file tree (`node native/bench.mjs 20000`):
+
+| | build | files read | grep |
+|---|---|---|---|
+| cold (no stored index) | 1320ms | 20,000 | <1ms |
+| warm (unchanged tree) | **188ms** | 0 | <1ms |
+
+**7×**, and the cost that remains is the directory walk, not the files. Editing one file re-reads one file.
+
+Correctness rests on a single rule: a stored entry is trusted only while its **size and mtime still match what is on disk**. Anything changed, new, or vanished is re-read before a query can see it. A cache that answers confidently for a file that has moved on is worse than no cache. The reload path is checked against the rebuild path on every supported platform (`native/persist.mjs`, run in CI) — same totals, same lines, same order — including that a corrupt or truncated index is *discarded* rather than half-trusted.
+
+Trigram lists are stored as varint deltas, which is what makes this worth doing at all: 881KB for this suite, ~2.2KB per file, about a third of the naive encoding. Reading a cache that is larger than the sources it summarises costs more than the rebuild it was meant to avoid.
+
+The index lives in the platform cache directory — `%LOCALAPPDATA%`, `~/Library/Caches`, `$XDG_CACHE_HOME` — keyed by a hash of the absolute root, never inside your working tree.
+
+| variable | effect |
+|---|---|
+| `PIFY_SEARCH_NO_CACHE=1` | never store an index; rebuild every start |
+| `PIFY_SEARCH_CACHE_DIR` | store indexes somewhere else |
+| `PIFY_SEARCH_TIMING=1` | print how long the walk, the reload and the inversion each took |
+| `PIFY_SEARCH_ENGINE` | `builtin` or `fff` to force an engine |
+
 ## Ranking
 
 Frecency decays on a three-day half-life — an agent session is shorter and more concentrated than a human's week, so yesterday's file should not outrank today's. Every `read`, `edit` or `write` in the session counts as an access. History is capped at seven days and 128 timestamps per file, so the store cannot grow without bound.
@@ -71,7 +97,7 @@ This package adds two tools; it does not replace `find`, `grep` or `multi_grep`.
 
 ## Command
 
-`/search` — which engine is running, the indexed root, and how many files it holds.
+`/search` — which engine is running, the indexed root, how many files it holds, and how much of the index came back from the stored copy rather than from disk.
 
 ## License
 

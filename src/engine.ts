@@ -69,6 +69,14 @@ export interface SearchEngine {
   dispose(): void;
   /** How many files the index holds, when the engine can say. */
   indexed?(): number;
+  /**
+   * How the last index build was paid for: files whose contents came back from
+   * the stored index versus files that had to be read. Only an engine that
+   * persists its index can answer, and it is worth surfacing — "reused 0" on a
+   * tree that has not changed is the visible symptom of a cache that is
+   * silently not working.
+   */
+  stats?(): { reused: number; rebuilt: number };
 }
 
 /** fff calls it "plain"; this package calls it what a user would call it. */

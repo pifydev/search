@@ -1,6 +1,6 @@
 {
   "name": "@pify/search",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Fuzzy file finding and indexed content search for pi, with no native binary and no daemon",
   "keywords": [
     "pi-package",

@@ -3,8 +3,11 @@
  *
  * A Rust index built for this package: the same trigram narrowing and the same
  * scoring constants as the TypeScript fallback, compiled. It builds an index
- * of this suite — 417 files — in about 33ms, and a literal search then reads 5
+ * of this suite — 417 files — in about 40ms, and a literal search then reads 5
  * of those files instead of all of them.
+ *
+ * The index is stored between sessions, so a second start on an unchanged tree
+ * reloads instead of re-reading it. See `cachePathFor` for where it lives.
  *
  * The binary is an optional dependency per platform, in the napi convention.
  * If none of them installed, this returns null and the caller falls back;
@@ -12,9 +15,11 @@
  * the ordinary case this package is designed to survive.
  */
 
+import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 import { existsSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { homedir, tmpdir } from "node:os";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import type { ContentHit, FileHit, GrepOptions, Page, SearchEngine, FindOptions } from "./engine.ts";
@@ -30,6 +35,11 @@ interface NativePage<T> {
 interface NativeIndex {
   fileCount(): number;
   indexedCount(): number;
+  /** Files whose contents came from the stored index instead of from disk. */
+  reusedCount(): number;
+  /** Files that had to be read because they were new or had changed. */
+  rebuiltCount(): number;
+  save(): void;
   touch(path: string): void;
   refresh(path: string): void;
   forget(path: string): void;
@@ -44,7 +54,39 @@ interface NativeIndex {
 }
 
 interface NativeModule {
-  SearchIndex: new (root: string, maxFiles?: number) => NativeIndex;
+  SearchIndex: new (root: string, maxFiles?: number, cachePath?: string) => NativeIndex;
+}
+
+/**
+ * Where a tree's stored index lives.
+ *
+ * Not inside the repository: an index is a derived artifact, it is large, and
+ * writing one into someone's working tree means it shows up in their `git
+ * status` and their diffs. It goes in the platform's cache directory, keyed by
+ * the absolute path of the root so two checkouts of the same project keep
+ * their own.
+ *
+ * `PIFY_SEARCH_CACHE_DIR` relocates it and `PIFY_SEARCH_NO_CACHE=1` turns it
+ * off, which is how the no-cache path stays tested on a machine that has one.
+ */
+export function cachePathFor(root: string): string | undefined {
+  if (process.env.PIFY_SEARCH_NO_CACHE === "1") return undefined;
+
+  const base =
+    process.env.PIFY_SEARCH_CACHE_DIR ??
+    (process.platform === "win32"
+      ? join(process.env.LOCALAPPDATA ?? tmpdir(), "pify-search")
+      : process.platform === "darwin"
+        ? join(homedir(), "Library", "Caches", "pify-search")
+        : join(process.env.XDG_CACHE_HOME ?? join(homedir(), ".cache"), "pify-search"));
+
+  const absolute = resolve(root);
+  // The readable part is for a human looking at the cache directory; the hash
+  // is what actually makes the name unique, since two projects can share a
+  // basename and paths differ only in case on some platforms.
+  const label = (basename(absolute) || "root").replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 40);
+  const digest = createHash("sha256").update(absolute.toLowerCase()).digest("hex").slice(0, 16);
+  return join(base, `${label}-${digest}.idx`);
 }
 
 /** The napi triple for this host, matching how the binaries are published. */
@@ -104,7 +146,7 @@ export function loadNative(root: string, maxFiles?: number): SearchEngine | null
 
   let index: NativeIndex;
   try {
-    index = new mod.SearchIndex(root, maxFiles);
+    index = new mod.SearchIndex(root, maxFiles, cachePathFor(root));
   } catch {
     return null;
   }
@@ -167,8 +209,18 @@ export function loadNative(root: string, maxFiles?: number): SearchEngine | null
         return 0;
       }
     },
+    stats() {
+      try {
+        return { reused: index.reusedCount(), rebuilt: index.rebuiltCount() };
+      } catch {
+        return { reused: 0, rebuilt: 0 };
+      }
+    },
     dispose() {
-      // The Rust side owns nothing that outlives the object.
+      // Deliberately not saving here. Anything `refresh` changed during the
+      // session has a new mtime on disk, so the next start sees the mismatch
+      // and re-reads those files anyway — writing the whole index out at exit
+      // would cost a multi-megabyte write to save a handful of file reads.
     },
   };
 }

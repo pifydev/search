@@ -56,6 +56,13 @@ export function formatStatus(engine: SearchEngine | null, root: string): string 
   ];
   const count = engine.indexed?.();
   if (typeof count === "number") lines.push(`Files:  ${count} indexed`);
+  const stats = engine.stats?.();
+  if (stats && stats.reused + stats.rebuilt > 0) {
+    lines.push(
+      `Index:  ${stats.reused} reused from cache, ${stats.rebuilt} read from disk` +
+        (stats.reused === 0 ? " (first run for this tree)" : ""),
+    );
+  }
   if (engine.name === "builtin") {
     lines.push(
       "",
