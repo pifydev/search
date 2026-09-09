@@ -1,0 +1,86 @@
+{
+  "name": "@pify/search",
+  "version": "0.1.0",
+  "description": "Fuzzy file finding and indexed content search for pi, with no native binary and no daemon",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "pi",
+    "pify",
+    "search",
+    "grep",
+    "fuzzy",
+    "trigram"
+  ],
+  "homepage": "https://github.com/pifydev/search#readme",
+  "bugs": {
+    "url": "https://github.com/pifydev/search/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pifydev/search.git"
+  },
+  "license": "MIT",
+  "author": "Pify maintainers",
+  "type": "module",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "files": [
+    "extensions",
+    "src",
+    "skills",
+    "README.md",
+    "LICENSE"
+  ],
+  "pi": {
+    "extensions": [
+      "./extensions/search.ts"
+    ],
+    "skills": [
+      "./skills"
+    ]
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "bun test",
+    "prepublishOnly": "npm run typecheck && npm test"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-ai": {
+      "optional": true
+    },
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    },
+    "@earendil-works/pi-tui": {
+      "optional": true
+    },
+    "typebox": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@earendil-works/pi-ai": "^0.85.1",
+    "@earendil-works/pi-coding-agent": "^0.85.1",
+    "@earendil-works/pi-tui": "^0.85.1",
+    "@types/node": "^22.10.2",
+    "typebox": "^1.1.38",
+    "typescript": "^5.7.2"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "dependencies": {
+    "@ff-labs/fff-node": "^0.10.6"
+  },
+  "optionalDependencies": {
+    "@ff-labs/fff-node": "^0.10.6"
+  }
+}
