@@ -52,4 +52,4 @@ console.log(`cache ${(statSync(cache).size / 1048576).toFixed(1)}MB`);
 const warm = run("warm");
 const warm2 = run("warm2");
 console.log(`\ncold ${cold}ms -> warm ${Math.min(warm, warm2)}ms  (${(cold / Math.min(warm, warm2)).toFixed(1)}x)`);
-rmSync(tree, { recursive: true, force: true });
+rmSync(tree, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });

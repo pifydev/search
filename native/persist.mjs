@@ -122,6 +122,6 @@ check(
   JSON.stringify(shape(probe(salvaged))) === JSON.stringify(coldResults),
 );
 
-rmSync(cacheDir, { recursive: true, force: true });
+rmSync(cacheDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
 console.log(failures === 0 ? "\nall persistence checks passed" : `\n${failures} FAILED`);
 process.exit(failures === 0 ? 0 : 1);

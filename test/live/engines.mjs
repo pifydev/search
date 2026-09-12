@@ -185,7 +185,7 @@ try {
   builtin.dispose();
   native?.dispose();
 } finally {
-  rmSync(root, { recursive: true, force: true });
+  rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
 }
 
 console.log(`${NL}${passed}/${passed + failed} passed`);

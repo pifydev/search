@@ -55,7 +55,7 @@ check("PIFY_SEARCH_NO_CACHE writes nothing", readdirSync(otherDir).length === 0)
 check("PIFY_SEARCH_NO_CACHE still searches correctly", JSON.stringify((await off.grep("danglingReferences")).items.map((i) => `${i.path}:${i.line}`)) === JSON.stringify(coldHits));
 off.dispose();
 
-rmSync(dir, { recursive: true, force: true });
-rmSync(otherDir, { recursive: true, force: true });
+rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+rmSync(otherDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
 console.log(bad === 0 ? "\nall loader checks passed" : `\n${bad} FAILED`);
 process.exit(bad ? 1 : 0);
