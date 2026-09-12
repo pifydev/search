@@ -58,6 +58,12 @@ try {
   // failure an index must never produce, and invisible without a case like
   // this one.
   write("classy.ts", `const v = xay;${NL}`);
+  // Same failure class, one level up: an optional group's contents treated as
+  // required. A file matching via the required part alone must be found.
+  write("optional.ts", `const xyz123 = 1;${NL}`);
+  // And case-sensitive search must narrow through the case-folded index: the
+  // plan speaks the index's encoding, the matcher owns sensitivity.
+  write("todos.ts", `// TODO: fix this later${NL}`);
   writeFileSync(join(root, "binary.dat"), Buffer.from([0x00, 0x01, 0x02, 0x00, 0x53]));
 
   const builtin = builtinEngine(root);
@@ -146,6 +152,21 @@ try {
   }
 
   for (const [name, engine] of engines) {
+    const og = await engine.grep("(abcd)?xyz", { mode: "regex", limit: 10 });
+    check(
+      `${name}: an optional group never hides a matching file`,
+      og.items.some((i) => i.path === "optional.ts"),
+      og.items.map((i) => i.path).join(", ") || "(none)",
+    );
+    const cs = await engine.grep("TODO", { mode: "literal", limit: 10, caseInsensitive: false });
+    check(
+      `${name}: case-sensitive search still narrows through the folded index`,
+      cs.items.some((i) => i.path === "todos.ts"),
+      cs.items.map((i) => i.path).join(", ") || "(none)",
+    );
+    const csMiss = await engine.grep("todo:", { mode: "literal", limit: 10, caseInsensitive: false });
+    check(`${name}: and sensitivity is still enforced by the matcher`, csMiss.total === 0, `total=${csMiss.total}`);
+
     const r = await engine.grep("x[abcdef]y", { mode: "regex", limit: 10 });
     check(
       `${name}: a character class never hides a matching file`,

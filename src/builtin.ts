@@ -206,10 +206,18 @@ export function builtinEngine(root: string, options: BuiltinOptions = {}): Searc
 
       // Fuzzy matching has no required substring, so the index cannot narrow
       // it; saying so honestly beats narrowing wrongly and losing matches.
+      //
+      // The plan is ALWAYS case-folded, whatever the caller asked, because the
+      // index stores only folded trigrams — the plan must speak the index's
+      // encoding or it asks for postings that structurally cannot exist.
+      // Planning `TODO` case-sensitively looked up `TOD`/`ODO` in a lowercase
+      // index and returned "no match" over a tree full of TODOs. Case
+      // sensitivity is the MATCHER's job: the index only narrows, and every
+      // candidate is still verified against the real pattern below.
       const plan =
         mode === "fuzzy"
           ? { kind: "all" as const }
-          : planForPatterns([mode === "regex" ? planForRegex(pattern, caseInsensitive) : planForLiteral(pattern, caseInsensitive)]);
+          : planForPatterns([mode === "regex" ? planForRegex(pattern, true) : planForLiteral(pattern, true)]);
       const narrowed = index.candidates(plan);
 
       const hits: ContentHit[] = [];

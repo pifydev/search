@@ -233,19 +233,20 @@ fn intersect(a: &[u32], b: &[u32]) -> Vec<u32> {
 /// files that genuinely match — a false negative, the one failure an index
 /// must never produce.
 ///
-/// That is exactly what an earlier version did. Merely *breaking* at a
-/// delimiter left its contents behind as an ordinary run: `x[abcdef]y` yielded
-/// `["abcdef"]` and demanded `abc`, `bcd`, `cde`, `def`, none of which a
-/// matching `xay` contains. Measured against the same file: `node`'s regex
-/// said it matched and this search returned nothing. `a{2,4}bcdef` had the
-/// same shape and required the literal `2,4`.
-///
-/// So bracketed and braced spans are skipped over entirely rather than broken
-/// at. Losing a run costs narrowing; keeping a wrong one costs the answer.
-/// Kept deliberately identical to the TypeScript fallback's `literalRuns`.
+/// Delimited spans (`[…]`, `{…}`) are skipped, not broken at. Groups get the
+/// same treatment one level up: a quantifier after `)` makes the whole group
+/// optional, so nothing pushed since its `(` is required — which needs a
+/// stack, because by the time `)?` is seen the group's runs are already in
+/// the list. The first fix here handled classes and braces and missed exactly
+/// this: `(abcd)?xyz` still demanded the trigrams of `abcd`, and a file
+/// containing only `xyz` matched the regex while the index excluded it.
+/// Lookarounds are dropped conservatively — a negative `(?!abcd)` must never
+/// require what it forbids. Kept deliberately identical to the TypeScript
+/// fallback's `literalRuns`.
 pub fn literal_runs(pattern: &str) -> Vec<String> {
     let chars: Vec<char> = pattern.chars().collect();
-    let mut runs = Vec::new();
+    let mut runs: Vec<String> = Vec::new();
+    let mut groups: Vec<(usize, bool)> = Vec::new();
     let mut current = String::new();
     let mut i = 0usize;
     while i < chars.len() {
@@ -268,6 +269,42 @@ pub fn literal_runs(pattern: &str) -> Vec<String> {
             i = skip_to(&chars, i, ']');
             continue;
         }
+        if ch == '(' {
+            runs.push(std::mem::take(&mut current));
+            let mut discard = false;
+            if chars.get(i + 1) == Some(&'?') {
+                if chars.get(i + 2) == Some(&':') {
+                    // (?:…) is an ordinary group in disguise; without
+                    // consuming the marker, `?` reads as a quantifier and
+                    // `:` as text.
+                    i += 2;
+                } else {
+                    // Lookarounds: only the positive forms truly require
+                    // their contents, and requiring a negative one's contents
+                    // excludes exactly the files that match.
+                    discard = true;
+                    i += 1;
+                }
+            }
+            groups.push((runs.len(), discard));
+            i += 1;
+            continue;
+        }
+        if ch == ')' {
+            let group = groups.pop();
+            let next = chars.get(i + 1).copied();
+            // `+` is deliberately absent: (abc)+ requires at least one abc.
+            let optional = matches!(next, Some('?') | Some('*') | Some('{'));
+            match group {
+                Some((start, discard)) if discard || optional => {
+                    runs.truncate(start);
+                    current.clear();
+                }
+                _ => runs.push(std::mem::take(&mut current)),
+            }
+            i += 1;
+            continue;
+        }
         // A quantifier applies to the character before it, which is therefore
         // not required — and the count inside the braces is not text to match.
         if ch == '{' {
@@ -282,7 +319,7 @@ pub fn literal_runs(pattern: &str) -> Vec<String> {
             i += 1;
             continue;
         }
-        if matches!(ch, '(' | ')' | '}' | ']' | '|' | '.' | '^' | '$') {
+        if matches!(ch, '}' | ']' | '|' | '.' | '^' | '$') {
             runs.push(std::mem::take(&mut current));
             i += 1;
             continue;

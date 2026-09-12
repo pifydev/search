@@ -64,9 +64,20 @@ export type Plan =
  *
  * So bracketed and braced spans are skipped over entirely rather than broken
  * at. Losing a run costs narrowing; keeping a wrong one costs the answer.
+ *
+ * Groups get the same treatment one level up. A quantifier after `)` makes
+ * the whole group optional, so nothing pushed since its `(` is required —
+ * which needs a stack, because by the time `)?` is seen the group's runs are
+ * already in the list. The first fix in this area handled `[...]` and `{...}`
+ * and missed exactly this: `(abcd)?xyz` still demanded the trigrams of
+ * `abcd`, and a file containing only `xyz` matched the regex while the index
+ * excluded it. Lookarounds are dropped the same way, conservatively: a
+ * negative `(?!abcd)` must never require what it forbids, and telling the
+ * four lookaround forms apart buys too little to be worth the parsing.
  */
 export function literalRuns(pattern: string): string[] {
   const runs: string[] = [];
+  const groups: Array<{ start: number; discard: boolean }> = [];
   let current = "";
   const breakRun = () => {
     runs.push(current);
@@ -95,6 +106,37 @@ export function literalRuns(pattern: string): string[] {
       i = skipTo(pattern, i, "]");
       continue;
     }
+    if (ch === "(") {
+      breakRun();
+      let discard = false;
+      if (pattern[i + 1] === "?") {
+        if (pattern[i + 2] === ":") {
+          // (?:…) is an ordinary group in disguise; without consuming the
+          // marker here, `?` would read as a quantifier and `:` as text.
+          i += 2;
+        } else {
+          // (?=…) (?!…) (?<=…) (?<!…): zero-width. Only the positive forms
+          // truly require their contents, and requiring a negative one's
+          // contents excludes exactly the files that match.
+          discard = true;
+          i += 1;
+        }
+      }
+      groups.push({ start: runs.length, discard });
+      continue;
+    }
+    if (ch === ")") {
+      const group = groups.pop();
+      const next = pattern[i + 1];
+      // `+` is deliberately absent: (abc)+ requires at least one abc.
+      if (group && (group.discard || next === "?" || next === "*" || next === "{")) {
+        runs.length = group.start;
+        current = "";
+      } else {
+        breakRun();
+      }
+      continue;
+    }
     // A quantifier applies to the character before it, which is therefore not
     // required either — and the count inside the braces is not text to match.
     if (ch === "{") {
@@ -108,7 +150,7 @@ export function literalRuns(pattern: string): string[] {
       current = "";
       continue;
     }
-    if ("()}]|.^$".includes(ch)) {
+    if ("}]|.^$".includes(ch)) {
       breakRun();
       continue;
     }

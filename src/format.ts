@@ -36,7 +36,14 @@ export function formatMatches(page: Page<ContentHit>, pattern: string, mode: Gre
         : "";
     return `No match for "${pattern}" (${mode}).${hint}`;
   }
-  const lines = page.items.map((hit) => `${hit.path}:${hit.line}: ${hit.text.trim().slice(0, 200)}`);
+  // A cut line must not read like a whole one: without the marker, a
+  // truncated line is indistinguishable from the line ending there, and the
+  // reader quotes half a statement as if it were all of it.
+  const lines = page.items.map((hit) => {
+    const text = hit.text.trim();
+    const shown = text.length > 200 ? `${text.slice(0, 200)}… (line truncated — read the file for the rest)` : text;
+    return `${hit.path}:${hit.line}: ${shown}`;
+  });
   return `${page.total} match${page.total === 1 ? "" : "es"} for "${pattern}" (${mode}):\n${lines.join("\n")}${more(page, "ffgrep")}`;
 }
 

@@ -41,7 +41,7 @@ Three modes because three different questions get asked: the exact string, a sha
 
 The fallback is the point. A native binary is a promise you cannot always keep: an unsupported platform, a locked-down install, a blocked postinstall — any of those, and a binary-only search extension is one that silently does nothing.
 
-Both are checked against each other on a real tree (`test/live/engines.mjs`, **27/27**): the same files found, the same literal matches, the same refusal to search `node_modules`, the same reading of your `.gitignore`, cursors that advance rather than repeat — and they **rank identically**, because they share their scoring constants on purpose. Losing the binary should change how fast a search is, never how it is ordered. `/search` says which engine is live. There are no runtime dependencies.
+Both are checked against each other on a real tree (`test/live/engines.mjs`, **35/35**): the same files found, the same literal matches, the same refusal to search `node_modules`, the same reading of your `.gitignore`, cursors that advance rather than repeat — and they **rank identically**, because they share their scoring constants on purpose. Losing the binary should change how fast a search is, never how it is ordered. `/search` says which engine is live. There are no runtime dependencies.
 
 ### Building the native core
 

@@ -50,6 +50,41 @@ test("a delimiter's contents are never a required run", () => {
   assert.deepEqual(planForRegex("x[abcdef]y", false), { kind: "all" });
 });
 
+test("an optional group's contents are never required", () => {
+  // The group-stack case the first fix missed: by the time `)?` is seen the
+  // group's runs are already pushed, so they must be *retracted*. Before this,
+  // `(abcd)?xyz` demanded the trigrams of abcd and a file containing only
+  // `xyz` matched the regex while the index excluded it.
+  assert.deepEqual(literalRuns("(abcd)?xyz"), ["xyz"]);
+  assert.deepEqual(literalRuns("(abcd)*xyz"), ["xyz"]);
+  assert.deepEqual(literalRuns("(abcd){0,2}xyz"), ["xyz"]);
+  // Nesting: the outer quantifier retracts the inner group's runs too.
+  assert.deepEqual(literalRuns("((abc)de)?fgh"), ["fgh"]);
+  // `+` means at least once, so the contents stay required.
+  assert.deepEqual(literalRuns("(abc)+def"), ["abc", "def"]);
+  assert.deepEqual(literalRuns("(abc)def"), ["abc", "def"]);
+  // (?:…) is an ordinary group in disguise, not a quantifier and a colon.
+  assert.deepEqual(literalRuns("(?:abcd)efg"), ["abcd", "efg"]);
+  assert.deepEqual(literalRuns("(?:abcd)?efg"), ["efg"]);
+  // Lookarounds are dropped conservatively — the negative form MUST be,
+  // because requiring what it forbids excludes exactly the matching files.
+  assert.deepEqual(literalRuns("(?!abcd)efg"), ["efg"]);
+  assert.deepEqual(literalRuns("(?=abcd)efg"), ["efg"]);
+  // An escaped paren is an ordinary character, not a group.
+  assert.deepEqual(literalRuns("abc\\(def"), ["abc(def"]);
+});
+
+test("case-sensitive grep still narrows through the folded index", () => {
+  // The index stores only case-folded trigrams. Planning with the caller's
+  // sensitivity asked a lowercase index for "TOD"/"ODO" and got nothing —
+  // "no match" over a tree full of TODOs. The plan must always speak the
+  // index's encoding; the matcher owns case sensitivity.
+  const index = new TrigramIndex();
+  index.add(1, "// TODO: fix this later");
+  const plan = planForLiteral("TODO", true);
+  assert.deepEqual(index.candidates(plan), new Set([1]));
+});
+
 test("an unindexable pattern says so rather than narrowing wrongly", () => {
   // This is the whole correctness question: null candidates means "read
   // everything", and an empty set means "read nothing". Confusing them is how
