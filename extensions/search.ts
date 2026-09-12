@@ -92,6 +92,16 @@ export default function searchExtension(pi: ExtensionAPI) {
   pi.registerTool({
     name: "fffind",
     label: "Find files",
+    // Without a snippet a custom tool is left out of the system prompt's
+    // "Available tools" list entirely — pi filters that list by exactly this
+    // field. Measured: the API schema carried fffind and ffgrep while the
+    // prompt named only read/bash/edit/write, and described bash as
+    // "Execute bash commands (ls, grep, find, etc.)". The prompt was pointing
+    // the agent at bash grep while the tools built for the job went unnamed.
+    promptSnippet: "Find files by fuzzy name or path, ranked by relevance",
+    promptGuidelines: [
+      "Use fffind to locate a file by an approximate name instead of `find` or `ls` through bash.",
+    ],
     description:
       "Find files by name or path with fuzzy, typo-tolerant matching, ranked so the file you meant " +
       "comes first — recently edited and git-modified files rank higher. Prefer this over find/ls " +
@@ -119,6 +129,10 @@ export default function searchExtension(pi: ExtensionAPI) {
   pi.registerTool({
     name: "ffgrep",
     label: "Search contents",
+    promptSnippet: "Search file contents with a literal, regex, or fuzzy pattern over an index",
+    promptGuidelines: [
+      "Use ffgrep to search file contents instead of `grep` or `rg` through bash: it reads only the files a trigram index says could match, and it skips node_modules and anything the repository's .gitignore excludes.",
+    ],
     description:
       "Search file contents from an in-memory index rather than re-reading the tree. mode=literal " +
       "(default) for an exact string, regex for a pattern, fuzzy when you are unsure of the exact " +
