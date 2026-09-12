@@ -57,7 +57,15 @@ The result is picked up automatically from `native/target/release/`. CI builds a
 
 That is a different question from whether the code works, and it is answered separately. `test/install-check.mjs` packs the tarball, installs it, loads the extension through jiti exactly as pi does, and runs real searches against a real tree — on **Linux, macOS and Windows** in CI, with no model and no API key. It is the check that catches a file missing from `files`, which is otherwise invisible until a user installs the package and a search quietly finds nothing.
 
-`test/live/install-wire.mjs` covers the other half on demand: `pi install npm:@pify/search` into a throwaway agent directory, then a real session calling `fffind` and `ffgrep`, verified by reading pi's own provider payloads rather than its printed output. Measured on Windows: 7/7, including that the install carries no native binary and the fallback answers anyway.
+`test/live/install-wire.mjs` covers the other half: a real pi session against a real install, verified by reading pi's own provider payloads rather than its printed output — because print mode reports only final text and a model replying "DONE" proves nothing. It runs on **all three platforms** on every tag (`.github/workflows/live.yml`), packing the commit being built rather than trusting whatever is already published:
+
+```
+install (ubuntu-latest)   7/7 passed
+install (macos-latest)    7/7 passed
+install (windows-latest)  7/7 passed
+```
+
+Each run states which engine it proved. Today all three say *"no native binary in the install — this run exercises the TypeScript engine"*, which is the honest shape of the answer until the per-platform binaries ship.
 
 ## How the content index works
 
