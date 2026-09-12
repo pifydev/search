@@ -48,9 +48,7 @@ export function formatStatus(engine: SearchEngine | null, root: string): string 
     `Engine: ${
       engine.name === "native"
         ? "native (this package's Rust core)"
-        : engine.name === "fff"
-          ? "fff (@ff-labs/fff-node)"
-          : "builtin (pure TypeScript, no native binary)"
+        : "builtin (pure TypeScript, no native binary)"
     }`,
     `Root:   ${root}`,
   ];
@@ -66,8 +64,8 @@ export function formatStatus(engine: SearchEngine | null, root: string): string 
   if (engine.name === "builtin") {
     lines.push(
       "",
-      "The native engine was not available — either @ff-labs/fff-node is not installed or it has no",
-      "binary for this platform. The builtin engine is slower but needs nothing installed.",
+      "No native binary for this platform, so searches run in TypeScript: slower on a large tree,",
+      "identical in what they find and how they rank it. Build one with `npm run build:native`.",
     );
   }
   return lines.join("\n");

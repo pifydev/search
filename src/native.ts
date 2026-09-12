@@ -119,9 +119,7 @@ function candidatePaths(triple: string): string[] {
  * get tested on a machine that has the binary.
  */
 export function loadNative(root: string, maxFiles?: number): SearchEngine | null {
-  if (process.env.PIFY_SEARCH_ENGINE === "builtin" || process.env.PIFY_SEARCH_ENGINE === "fff") {
-    return null;
-  }
+  if (process.env.PIFY_SEARCH_ENGINE === "builtin") return null;
   const triple = tripleOf(process.platform, process.arch);
   if (!triple) return null;
 

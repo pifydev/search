@@ -18,7 +18,9 @@ import { buildMatcher, looksBinary, matchLines } from "./match.ts";
 import { TrigramIndex, planForLiteral, planForPatterns, planForRegex } from "./trigram.ts";
 import {
   MAX_SEARCHABLE_BYTES,
+  ignoreMatches,
   includeFile,
+  parseIgnore,
   indexContent,
   normalizePath,
   skipDirectory,
@@ -82,6 +84,37 @@ export function builtinEngine(root: string, options: BuiltinOptions = {}): Searc
     index.remove(id);
   }
 
+  /**
+   * The repository's own ignore rules, read once at the root.
+   *
+   * The hard-coded skip list knows about `node_modules` and `target`; it
+   * cannot know that this project generates `build-out/` or writes
+   * `secrets.env`. Those are exactly the files a repository has already said
+   * it does not want carried around — and an index that carries them lets
+   * `ffgrep` surface a credential the repo deliberately excluded.
+   *
+   * Only the root `.gitignore` is read. Nested ones and the full git ignore
+   * precedence are not, because a half-implemented ignore hides files
+   * silently, and under-ignoring is the safer direction to be wrong in.
+   */
+  const ignorePatterns = (() => {
+    try {
+      return parseIgnore(readFileSync(join(root, ".gitignore"), "utf8"));
+    } catch {
+      return [];
+    }
+  })();
+
+  function ignored(absolute: string, isDir: boolean): boolean {
+    if (ignorePatterns.length === 0) return false;
+    const rel = normalizePath(relative(root, absolute));
+    if (!rel || rel.startsWith("..")) return false;
+    // A directory pattern (`generated/`) has to be matched against the
+    // directory's own path, so the whole subtree is skipped rather than every
+    // file under it being tested one at a time.
+    return ignoreMatches(ignorePatterns, isDir ? `${rel}/` : rel);
+  }
+
   function scan(dir: string, depth = 0): void {
     if (entries.size >= maxFiles || depth > 24) return;
     let listing: string[];
@@ -100,9 +133,10 @@ export function builtinEngine(root: string, options: BuiltinOptions = {}): Searc
         continue;
       }
       if (stats.isDirectory()) {
-        if (skipDirectory(name)) continue;
+        if (skipDirectory(name) || ignored(absolute, true)) continue;
         scan(absolute, depth + 1);
       } else if (stats.isFile()) {
+        if (ignored(absolute, false)) continue;
         add(absolute, stats.size, stats.mtimeMs);
       }
     }
@@ -115,6 +149,9 @@ export function builtinEngine(root: string, options: BuiltinOptions = {}): Searc
         const absolute = join(root, String(filename));
         const parts = normalizePath(String(filename)).split("/");
         if (parts.some((part) => skipDirectory(part))) return;
+        // A file created under an ignored path must not sneak in through the
+        // watcher after the walk correctly skipped it.
+        if (ignored(absolute, false)) return;
         try {
           const stats = statSync(absolute);
           if (stats.isFile()) add(absolute, stats.size, stats.mtimeMs);

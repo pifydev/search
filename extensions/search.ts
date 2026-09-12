@@ -6,12 +6,12 @@
  * agent, which asks over and over inside a single session. An index built once
  * and kept current answers the second question and the fiftieth from memory.
  *
- * Two engines behind one interface. The fast path is `@ff-labs/fff-node`, a
- * Rust index with a live watcher, typo-resistant matching, git status and
- * frecency — it scans this suite in about 80ms. The fallback is pure
- * TypeScript with no dependencies, because a native binary is a promise you
- * cannot always keep: an unsupported platform or a blocked postinstall would
- * otherwise leave a search extension that does nothing.
+ * Two engines behind one interface. The fast path is this package's own Rust
+ * core — a trigram index over contents, typo-resistant path matching, git
+ * status and frecency — which keeps its index between sessions. The fallback
+ * is pure TypeScript with no dependencies, because a native binary is a
+ * promise you cannot always keep: an unsupported platform or a blocked
+ * postinstall would otherwise leave a search extension that does nothing.
  *
  * pi's own tools are left alone. Replacing `grep` and `find` would put every
  * search in the session behind whichever engine loaded, and a fallback that is
@@ -29,7 +29,7 @@ import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
-import { loadFff, type SearchEngine } from "../src/engine.ts";
+import type { SearchEngine } from "../src/engine.ts";
 import { loadNative } from "../src/native.ts";
 import { builtinEngine } from "../src/builtin.ts";
 import { parseHistory, pruneHistory, type History } from "../src/frecency.ts";
@@ -74,11 +74,11 @@ export default function searchExtension(pi: ExtensionAPI) {
       root = ctx.cwd;
       historyFile = historyPath(ctx.cwd);
       starting = (async () => {
-        // Preference order: this package's own core, then fff if the user
-        // has it, then the fallback that always works.
-        const fast = loadNative(root) ?? (await loadFff(root));
+        // This package's own core when there is a binary for this platform,
+        // and the fallback that always works when there is not.
         const chosen =
-          fast ?? builtinEngine(root, { history: loadHistory(), onHistoryChange: saveHistory });
+          loadNative(root) ??
+          builtinEngine(root, { history: loadHistory(), onHistoryChange: saveHistory });
         await chosen.ready(READY_TIMEOUT_MS);
         engine = chosen;
         return chosen;

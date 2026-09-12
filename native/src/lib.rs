@@ -8,6 +8,7 @@
 
 #![deny(clippy::all)]
 
+mod ignore;
 mod score;
 mod store;
 mod trigram;

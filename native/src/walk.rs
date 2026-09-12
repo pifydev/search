@@ -9,6 +9,8 @@
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
+use crate::ignore::{parse, Ignore};
+
 pub const MAX_INDEXABLE_BYTES: u64 = 2 * 1024 * 1024;
 pub const MAX_SEARCHABLE_BYTES: u64 = 10 * 1024 * 1024;
 
@@ -78,6 +80,12 @@ pub fn looks_binary(bytes: &[u8]) -> bool {
 }
 
 pub fn collect(root: &Path, max_files: usize) -> Vec<Found> {
+    // The repository's own rules, on top of the hard-coded list. Read once at
+    // the root; see ignore.rs for why nested files are deliberately not.
+    let ignore = Ignore::new(&std::fs::read_to_string(root.join(".gitignore"))
+        .map(|text| parse(&text))
+        .unwrap_or_default());
+
     let mut out = Vec::new();
     let walker = WalkDir::new(root)
         .max_depth(24)
@@ -89,9 +97,16 @@ pub fn collect(root: &Path, max_files: usize) -> Vec<Found> {
             }
             let name = entry.file_name().to_string_lossy();
             if entry.file_type().is_dir() {
-                return !SKIP_DIRS.contains(&name.as_ref());
+                if SKIP_DIRS.contains(&name.as_ref()) {
+                    return false;
+                }
+                // Refusing the directory here prunes the whole subtree, which
+                // is both faster and the only way a `generated/` rule can mean
+                // what it says.
+                return ignore.is_empty() || !ignore.matches_dir(&relative(root, entry.path()));
             }
             name != ".DS_Store"
+                && (ignore.is_empty() || !ignore.matches(&relative(root, entry.path())))
         });
 
     for entry in walker.flatten() {

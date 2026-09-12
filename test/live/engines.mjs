@@ -17,7 +17,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { builtinEngine } from "../../src/builtin.ts";
-import { loadFff } from "../../src/engine.ts";
 import { loadNative } from "../../src/native.ts";
 
 const NL = String.fromCharCode(10);
@@ -42,21 +41,32 @@ try {
   write("src/unrelated.ts", `export const x = 42;${NL}`);
   // Things the index must refuse to search.
   write("node_modules/junk/index.js", `SENTINEL_TOKEN everywhere${NL}`);
+  // A repository's own ignore rules. The hard-coded skip list cannot know that
+  // this project generates `generated/` or writes `secrets.env`, and an index
+  // that carries them lets a content search surface a credential the repo
+  // deliberately excluded. Both engines must skip them, and skip them
+  // identically — a file one finds and the other does not is the one failure
+  // this package cannot afford.
+  write(".gitignore", ["generated/", "*.log", "secrets.env", "!keep.log"].join(NL) + NL);
+  write("generated/huge.ts", `SENTINEL_TOKEN generated${NL}`);
+  write("debug.log", `SENTINEL_TOKEN log${NL}`);
+  write("keep.log", `SENTINEL_TOKEN kept${NL}`);
+  write("secrets.env", `TOKEN=SENTINEL_TOKEN${NL}`);
   writeFileSync(join(root, "binary.dat"), Buffer.from([0x00, 0x01, 0x02, 0x00, 0x53]));
 
   const builtin = builtinEngine(root);
   await builtin.ready(20_000);
-  const fff = await loadFff(root);
-  if (fff) await fff.ready(20_000);
   const native = loadNative(root);
   if (native) await native.ready(20_000);
 
+  // A run that only exercises the fallback proves half of what this file
+  // exists for, so it says so rather than reporting a clean pass.
   const engines = [
     ["builtin", builtin],
     ...(native ? [["native", native]] : []),
-    ...(fff ? [["fff", fff]] : []),
   ];
   console.log(`engines: ${engines.map(([n]) => n).join(", ")}`);
+  check("the native core was available to compare against", Boolean(native), native ? "" : "no binary for this platform — agreement was NOT checked");
   console.log(`builtin indexed ${builtin.indexed?.()} files${NL}`);
 
   for (const [name, engine] of engines) {
@@ -117,6 +127,18 @@ try {
   }
 
   // The ranking constants are shared on purpose: losing the binary should
+  for (const [name, engine] of engines) {
+    const hits = (await engine.grep("SENTINEL_TOKEN", { limit: 30 })).items.map((i) => i.path).sort();
+    check(
+      `${name}: honours .gitignore`,
+      !hits.some((p) => /^(generated\/|secrets\.env$|debug\.log$)/.test(p)),
+      hits.join(", ") || "(none)",
+    );
+    // The negation has to work too, or "ignore everything then keep one" —
+    // the most common shape people write — silently loses the kept file.
+    check(`${name}: a negated rule keeps the file it names`, hits.includes("keep.log"), hits.join(", "));
+  }
+
   // change how fast a search is, never how it is ordered.
   if (native) {
     const a = (await builtin.find("auth", { limit: 5 })).items.map((i) => i.path);
@@ -125,7 +147,6 @@ try {
   }
 
   builtin.dispose();
-  fff?.dispose();
   native?.dispose();
 } finally {
   rmSync(root, { recursive: true, force: true });

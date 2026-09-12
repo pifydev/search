@@ -33,17 +33,15 @@ The other half is the shape of the question. `find` wants a glob; people want *"
 
 Three modes because three different questions get asked: the exact string, a shape, and *"something like this"* for when you do not know how it is spelled.
 
-## Three engines, one interface
+## Two engines, one interface
 
 **native** — this package's own Rust core, `native/`, built with napi. It indexes this suite (417 files) in about **40ms** cold, and a literal search then reads the **5** files the trigram index says could match rather than all 417. Searches come back in about a millisecond. Its index is [stored between sessions](#the-index-survives-the-process), so the second start does not pay for the first.
-
-**fff** — [`@ff-labs/fff-node`](https://github.com/dmtrKovalenko/fff), used when it is installed and the native core is not. A mature engine with its own watcher and git integration.
 
 **builtin** — pure TypeScript, no dependencies, no binary. A trigram index for content, a fuzzy scorer for paths, an `fs.watch` subscription to stay current.
 
 The fallback is the point. A native binary is a promise you cannot always keep: an unsupported platform, a locked-down install, a blocked postinstall — any of those, and a binary-only search extension is one that silently does nothing.
 
-All three are checked against each other on a real tree (`test/live/engines.mjs`, **33/33**): the same files found, the same literal matches, the same refusal to search `node_modules`, cursors that advance rather than repeat — and native and builtin **rank identically**, because they share their scoring constants on purpose. Losing the binary should change how fast a search is, never how it is ordered. `/search` says which engine is live.
+Both are checked against each other on a real tree (`test/live/engines.mjs`, **27/27**): the same files found, the same literal matches, the same refusal to search `node_modules`, the same reading of your `.gitignore`, cursors that advance rather than repeat — and they **rank identically**, because they share their scoring constants on purpose. Losing the binary should change how fast a search is, never how it is ordered. `/search` says which engine is live. There are no runtime dependencies.
 
 ### Building the native core
 
@@ -53,7 +51,7 @@ npm run build:native      # cargo build --release --manifest-path native/Cargo.t
 
 The result is picked up automatically from `native/target/release/`. CI builds and smoke-tests six targets — win32 x64/arm64, darwin x64/arm64, linux x64/arm64 — on every tag.
 
-**Honest status:** only `win32-x64` has been built and verified by hand; the other five are proven by CI and nothing more. Per-platform npm packages (`@pify/search-<triple>`) are not published yet, so an installed copy of this package uses fff if you have it and the TypeScript engine otherwise. The loader already looks for them, so publishing is additive.
+**Honest status:** only `win32-x64` has been built and verified by hand; the other five are proven by CI and nothing more. Per-platform npm packages (`@pify/search-<triple>`) are not published yet, so an installed copy of this package uses the TypeScript engine. The loader already looks for them, so publishing is additive.
 
 ## How the content index works
 
@@ -69,10 +67,10 @@ Measured on a synthetic 20,000-file tree (`node native/bench.mjs 20000`):
 
 | | build | files read | grep |
 |---|---|---|---|
-| cold (no stored index) | 1320ms | 20,000 | <1ms |
-| warm (unchanged tree) | **188ms** | 0 | <1ms |
+| cold (no stored index) | 480ms | 20,000 | <1ms |
+| warm (unchanged tree) | **121ms** | 0 | <1ms |
 
-**7×**, and the cost that remains is the directory walk, not the files. Editing one file re-reads one file.
+**4×**, and the cost that remains is the directory walk, not the files. Editing one file re-reads one file. The absolute figures move with the operating system's own file cache — the same bench on a cold machine measured 1320ms and 188ms, a factor of 7 — so treat the ratio as the claim and the milliseconds as one machine on one afternoon.
 
 Correctness rests on a single rule: a stored entry is trusted only while its **size and mtime still match what is on disk**. Anything changed, new, or vanished is re-read before a query can see it. A cache that answers confidently for a file that has moved on is worse than no cache. The reload path is checked against the rebuild path on every supported platform (`native/persist.mjs`, run in CI) — same totals, same lines, same order — including that a corrupt or truncated index is *discarded* rather than half-trusted.
 
@@ -85,7 +83,15 @@ The index lives in the platform cache directory — `%LOCALAPPDATA%`, `~/Library
 | `PIFY_SEARCH_NO_CACHE=1` | never store an index; rebuild every start |
 | `PIFY_SEARCH_CACHE_DIR` | store indexes somewhere else |
 | `PIFY_SEARCH_TIMING=1` | print how long the walk, the reload and the inversion each took |
-| `PIFY_SEARCH_ENGINE` | `builtin` or `fff` to force an engine |
+| `PIFY_SEARCH_ENGINE` | `builtin` to force the fallback |
+
+## Your `.gitignore` is part of the index
+
+The hard-coded skip list knows about `node_modules` and `target`. It cannot know that your project generates `build-out/`, or writes `secrets.env` — and those are exactly the files the repository has already said it does not want carried around. An index that carries them lets `ffgrep` surface a credential the repo deliberately excluded.
+
+So the root `.gitignore` is read and applied by **both** engines, with the same rules: anchoring (`/build`), directory-only (`generated/`), `*` that stops at a slash and `**` that does not, and `!` negation where the last matching rule wins. Nested ignore files and git's full precedence are deliberately not implemented — a half-understood ignore hides files silently, and under-ignoring is the safer direction to be wrong in.
+
+The two engines are checked against each other on this, not just asserted: a tree with a `.gitignore` goes into `test/live/engines.mjs` and both must skip the same files and keep the same negated one.
 
 ## Ranking
 
