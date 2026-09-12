@@ -52,6 +52,12 @@ try {
   write("debug.log", `SENTINEL_TOKEN log${NL}`);
   write("keep.log", `SENTINEL_TOKEN kept${NL}`);
   write("secrets.env", `TOKEN=SENTINEL_TOKEN${NL}`);
+  // A character class is an alternation, so nothing inside it is required.
+  // Treating its contents as a literal run made the index demand trigrams the
+  // pattern never promised and drop a file that genuinely matched — the one
+  // failure an index must never produce, and invisible without a case like
+  // this one.
+  write("classy.ts", `const v = xay;${NL}`);
   writeFileSync(join(root, "binary.dat"), Buffer.from([0x00, 0x01, 0x02, 0x00, 0x53]));
 
   const builtin = builtinEngine(root);
@@ -137,6 +143,15 @@ try {
     // The negation has to work too, or "ignore everything then keep one" —
     // the most common shape people write — silently loses the kept file.
     check(`${name}: a negated rule keeps the file it names`, hits.includes("keep.log"), hits.join(", "));
+  }
+
+  for (const [name, engine] of engines) {
+    const r = await engine.grep("x[abcdef]y", { mode: "regex", limit: 10 });
+    check(
+      `${name}: a character class never hides a matching file`,
+      r.items.some((i) => i.path === "classy.ts"),
+      r.items.map((i) => i.path).join(", ") || "(none) — the index excluded a file node's own regex matches",
+    );
   }
 
   // change how fast a search is, never how it is ordered.

@@ -28,6 +28,28 @@ test("only literal runs of three or more imply required trigrams", () => {
   assert.deepEqual(literalRuns("a.b"), []);
 });
 
+test("a delimiter's contents are never a required run", () => {
+  // The bug this pins: breaking at `[` but leaving what followed behind made
+  // `x[abcdef]y` require abc/bcd/cde/def, none of which a matching `xay`
+  // contains — so the index excluded a file that genuinely matched. Measured
+  // against node's own regex before the fix: it said the file matched and the
+  // search returned nothing.
+  assert.deepEqual(literalRuns("x[abcdef]y"), []);
+  assert.deepEqual(literalRuns("[abcdef]"), []);
+  // Same shape with a quantifier: `2,4` is a count, not text to match.
+  assert.deepEqual(literalRuns("a{2,4}bcdef"), ["bcdef"]);
+  assert.deepEqual(literalRuns("x{10,200}y"), []);
+  // A group's contents ARE required when nothing inside varies, so they stay.
+  assert.deepEqual(literalRuns("a(bcdef)g"), ["bcdef"]);
+  // An escaped bracket is an ordinary character and must not start a skip.
+  assert.deepEqual(literalRuns("ab\\[cdef"), ["ab[cdef"]);
+  // An unterminated class is a malformed regex; the planner's only duty is to
+  // invent no requirement from it.
+  assert.deepEqual(literalRuns("xy[abcdef"), []);
+  // A class must not narrow the plan either — the run is what feeds it.
+  assert.deepEqual(planForRegex("x[abcdef]y", false), { kind: "all" });
+});
+
 test("an unindexable pattern says so rather than narrowing wrongly", () => {
   // This is the whole correctness question: null candidates means "read
   // everything", and an empty set means "read nothing". Confusing them is how

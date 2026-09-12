@@ -224,8 +224,25 @@ fn intersect(a: &[u32], b: &[u32]) -> Vec<u32> {
     out
 }
 
-/// Literal runs of three or more characters — the only parts of a pattern that
-/// imply required trigrams.
+/// Literal runs of three or more characters — the only parts of a pattern
+/// that imply required trigrams.
+///
+/// The rule that matters: a run may only contain characters the pattern
+/// *requires*, in the order it requires them. Emitting anything else asks the
+/// index for trigrams the pattern never promised, and the index then excludes
+/// files that genuinely match — a false negative, the one failure an index
+/// must never produce.
+///
+/// That is exactly what an earlier version did. Merely *breaking* at a
+/// delimiter left its contents behind as an ordinary run: `x[abcdef]y` yielded
+/// `["abcdef"]` and demanded `abc`, `bcd`, `cde`, `def`, none of which a
+/// matching `xay` contains. Measured against the same file: `node`'s regex
+/// said it matched and this search returned nothing. `a{2,4}bcdef` had the
+/// same shape and required the literal `2,4`.
+///
+/// So bracketed and braced spans are skipped over entirely rather than broken
+/// at. Losing a run costs narrowing; keeping a wrong one costs the answer.
+/// Kept deliberately identical to the TypeScript fallback's `literalRuns`.
 pub fn literal_runs(pattern: &str) -> Vec<String> {
     let chars: Vec<char> = pattern.chars().collect();
     let mut runs = Vec::new();
@@ -245,15 +262,27 @@ pub fn literal_runs(pattern: &str) -> Vec<String> {
             i += 2;
             continue;
         }
-        // A quantifier applies to the character before it, so that character
-        // is not required either.
-        if matches!(ch, '?' | '*' | '+' | '{') {
+        // A character class is an alternation: nothing it holds is required.
+        if ch == '[' {
+            runs.push(std::mem::take(&mut current));
+            i = skip_to(&chars, i, ']');
+            continue;
+        }
+        // A quantifier applies to the character before it, which is therefore
+        // not required — and the count inside the braces is not text to match.
+        if ch == '{' {
+            current.pop();
+            runs.push(std::mem::take(&mut current));
+            i = skip_to(&chars, i, '}');
+            continue;
+        }
+        if matches!(ch, '?' | '*' | '+') {
             current.pop();
             runs.push(std::mem::take(&mut current));
             i += 1;
             continue;
         }
-        if matches!(ch, '[' | ']' | '(' | ')' | '}' | '|' | '.' | '^' | '$') {
+        if matches!(ch, '(' | ')' | '}' | ']' | '|' | '.' | '^' | '$') {
             runs.push(std::mem::take(&mut current));
             i += 1;
             continue;
@@ -264,6 +293,24 @@ pub fn literal_runs(pattern: &str) -> Vec<String> {
     runs.push(current);
     runs.retain(|r| r.chars().count() >= 3);
     runs
+}
+
+/// One past the closing delimiter, or the end of the pattern when there is
+/// none. An unterminated `[` is a malformed regex the matcher will reject; the
+/// planner's only job is to avoid inventing requirements from it.
+fn skip_to(chars: &[char], from: usize, close: char) -> usize {
+    let mut i = from + 1;
+    while i < chars.len() {
+        if chars[i] == '\\' {
+            i += 2;
+            continue;
+        }
+        if chars[i] == close {
+            return i + 1;
+        }
+        i += 1;
+    }
+    chars.len()
 }
 
 pub fn plan_for_literal(literal: &str) -> Plan {

@@ -45,43 +45,93 @@ export type Plan =
   | { kind: "or"; branches: Plan[] }
   | { kind: "all" };
 
-/** Literal runs in a regex — the only parts that imply required trigrams. */
+/**
+ * Literal runs in a regex — the only parts that imply required trigrams.
+ *
+ * The rule that matters: a run may only contain characters the pattern
+ * *requires*, in the order it requires them. Emitting anything else asks the
+ * index for trigrams the pattern never promised, and the index then excludes
+ * files that genuinely match — a false negative, which is the one failure an
+ * index must never produce.
+ *
+ * That is exactly what an earlier version did. Scanning character by
+ * character and merely *breaking* at a delimiter left the delimiter's
+ * contents behind as an ordinary run: `x[abcdef]y` yielded `["abcdef"]` and
+ * demanded `abc`, `bcd`, `cde`, `def` — none of which a matching `xay`
+ * contains. Measured: the file matched under `node`'s own regex and the
+ * search returned nothing. `a{2,4}bcdef` had the same shape and required the
+ * literal `2,4`.
+ *
+ * So bracketed and braced spans are skipped over entirely rather than broken
+ * at. Losing a run costs narrowing; keeping a wrong one costs the answer.
+ */
 export function literalRuns(pattern: string): string[] {
   const runs: string[] = [];
   let current = "";
+  const breakRun = () => {
+    runs.push(current);
+    current = "";
+  };
+
   for (let i = 0; i < pattern.length; i++) {
     const ch = pattern[i]!;
     if (ch === "\\") {
       const next = pattern[i + 1];
-      // An escaped literal character contributes; a character class like \d
-      // does not, and ends the run.
+      // An escaped literal character contributes; a class like \d does not,
+      // and ends the run.
       if (next && /[^A-Za-z0-9]/.test(next)) {
         current += next;
         i++;
         continue;
       }
-      runs.push(current);
-      current = "";
+      breakRun();
       i++;
       continue;
     }
-    // Anything that can match a variable amount, or nothing, ends the run —
-    // and a quantifier applies to the character before it, which therefore
-    // cannot be required either.
-    if ("?*+{".includes(ch)) {
+
+    // A character class is an alternation: none of what it holds is required.
+    if (ch === "[") {
+      breakRun();
+      i = skipTo(pattern, i, "]");
+      continue;
+    }
+    // A quantifier applies to the character before it, which is therefore not
+    // required either — and the count inside the braces is not text to match.
+    if (ch === "{") {
+      runs.push(current.slice(0, -1));
+      current = "";
+      i = skipTo(pattern, i, "}");
+      continue;
+    }
+    if (ch === "?" || ch === "*" || ch === "+") {
       runs.push(current.slice(0, -1));
       current = "";
       continue;
     }
-    if ("[](){}|.^$".includes(ch)) {
-      runs.push(current);
-      current = "";
+    if ("()}]|.^$".includes(ch)) {
+      breakRun();
       continue;
     }
     current += ch;
   }
   runs.push(current);
   return runs.filter((run) => run.length >= 3);
+}
+
+/**
+ * Index of the closing delimiter, or the end of the pattern when there is
+ * none. An unterminated `[` is a malformed regex the matcher will reject; the
+ * planner's job here is only to avoid inventing requirements from it.
+ */
+function skipTo(pattern: string, from: number, close: string): number {
+  for (let i = from + 1; i < pattern.length; i++) {
+    if (pattern[i] === "\\") {
+      i++;
+      continue;
+    }
+    if (pattern[i] === close) return i;
+  }
+  return pattern.length;
 }
 
 /** A literal pattern: every one of its trigrams must be present. */
