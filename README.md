@@ -51,7 +51,13 @@ npm run build:native      # cargo build --release --manifest-path native/Cargo.t
 
 The result is picked up automatically from `native/target/release/`. CI builds and smoke-tests six targets — win32 x64/arm64, darwin x64/arm64, linux x64/arm64 — on every tag.
 
-**Honest status:** only `win32-x64` has been built and verified by hand; the other five are proven by CI and nothing more. Per-platform npm packages (`@pify/search-<triple>`) are not published yet, so an installed copy of this package uses the TypeScript engine. The loader already looks for them, so publishing is additive.
+**Honest status:** the per-platform npm packages (`@pify/search-<triple>`) are **not published yet**, so *everything you install today runs the TypeScript engine* — the Rust core is what you get by building it yourself from a clone. The loader already looks for the published binaries, so shipping them later is additive and changes nothing else. Of the six CI targets, only `win32-x64` has also been built and run by hand.
+
+### Does it work when installed?
+
+That is a different question from whether the code works, and it is answered separately. `test/install-check.mjs` packs the tarball, installs it, loads the extension through jiti exactly as pi does, and runs real searches against a real tree — on **Linux, macOS and Windows** in CI, with no model and no API key. It is the check that catches a file missing from `files`, which is otherwise invisible until a user installs the package and a search quietly finds nothing.
+
+`test/live/install-wire.mjs` covers the other half on demand: `pi install npm:@pify/search` into a throwaway agent directory, then a real session calling `fffind` and `ffgrep`, verified by reading pi's own provider payloads rather than its printed output. Measured on Windows: 7/7, including that the install carries no native binary and the fallback answers anyway.
 
 ## How the content index works
 

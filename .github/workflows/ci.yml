@@ -19,3 +19,33 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bunx tsc --noEmit
       - run: bun test
+
+  # What a user actually gets, on every platform they get it on.
+  #
+  # The job above runs the code out of the working tree, where every file
+  # exists whether or not `package.json` ships it. A file left out of `files`
+  # is invisible until someone installs the package and a search quietly finds
+  # nothing. So this packs the tarball, installs it, and drives the installed
+  # copy — loading the extension through jiti the way pi does.
+  #
+  # macOS appears here and not in the matrix above deliberately: this is the
+  # job that answers "does it work when installed", and that is the question
+  # that is genuinely per-platform.
+  install:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      # Installs the peer packages that pi supplies at runtime; without them
+      # the installed extension cannot resolve its own imports.
+      - run: bun install --frozen-lockfile
+      - run: node test/install-check.mjs
