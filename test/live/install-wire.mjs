@@ -12,9 +12,10 @@
  * directory, and drives the real tools against a real tree. It is the only
  * check in the repository that exercises the path a user is on.
  *
- * By default it installs the published version; `PIFY_INSTALL_FROM=pack`
- * packs the working tree instead, which is how a change gets verified before
- * it is published.
+ * `PIFY_INSTALL_FROM=pack` (the default in CI) packs the working tree and
+ * installs that, so the commit being built is what gets verified. `npm`
+ * installs the published version instead, which is literally what a user
+ * receives today.
  *
  *   node test/live/install-wire.mjs
  */
@@ -81,9 +82,20 @@ const run = (cmd, args, opts = {}) =>
 
 try {
   mkdirSync(agentDir, { recursive: true });
+  // pi reads OPENROUTER_API_KEY straight from the environment, which is how
+  // CI authenticates — there is no auth.json on a runner. Locally the key
+  // usually lives in the real agent directory instead, so that is copied
+  // across when the variable is not set.
+  const envKey = `${PROVIDER.toUpperCase().replace(/-/g, "_")}_API_KEY`;
   const realAuth = join(process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent"), "auth.json");
-  if (existsSync(realAuth)) copyFileSync(realAuth, join(agentDir, "auth.json"));
-  else console.log("warning: no auth.json found; pi will have no provider");
+  if (process.env[envKey]) {
+    console.log(`authenticating from $${envKey}`);
+  } else if (existsSync(realAuth)) {
+    copyFileSync(realAuth, join(agentDir, "auth.json"));
+    console.log(`authenticating from ${realAuth}`);
+  } else {
+    console.log(`warning: neither $${envKey} nor an auth.json — pi will have no provider`);
+  }
 
   writeFileSync(probe, PROBE_SOURCE);
   mkdirSync(join(repo, "src"), { recursive: true });
@@ -92,18 +104,33 @@ try {
 
   // Install exactly the way a user does.
   const env = { ...process.env, PI_CODING_AGENT_DIR: agentDir, INSTALL_OUT: out, INSTALL_TOKEN: TOKEN };
-  let spec = "npm:@pify/search";
+  let installed;
   if (FROM === "pack") {
+    // `pi install` takes `npm:<name>`, not a file. Handed a tarball path it
+    // records the path itself as a package and then fails to load it as an
+    // extension — so the tarball goes in through npm and the same on-disk
+    // state a real `pi install npm:@pify/search` leaves behind is written by
+    // hand: the package under agent/npm, and its name in settings.
     const packed = run("npm", ["pack", "--pack-destination", home], { cwd: PKG });
     const tarball = String(packed.stdout ?? "").trim().split(NL).pop();
-    spec = join(home, tarball);
     console.log(`installing from the working tree: ${tarball}`);
+    const npmRoot = join(agentDir, "npm");
+    mkdirSync(npmRoot, { recursive: true });
+    writeFileSync(
+      join(npmRoot, "package.json"),
+      JSON.stringify({ name: "pi-extensions", private: true }, null, 2) + NL,
+    );
+    installed = run("npm", ["install", "--no-audit", "--no-fund", join(home, tarball)], { cwd: npmRoot });
+    writeFileSync(
+      join(agentDir, "settings.json"),
+      JSON.stringify({ packages: ["npm:@pify/search"] }, null, 2) + NL,
+    );
   } else {
     console.log("installing the published version from npm");
+    installed = run("pi", ["install", "npm:@pify/search"], { cwd: repo, env });
   }
-  const installed = run("pi", ["install", FROM === "pack" ? spec : spec], { cwd: repo, env });
   const installLog = `${installed.stdout ?? ""}${installed.stderr ?? ""}`;
-  check("pi install succeeded", installed.status === 0, installLog.trim().split(NL).pop() ?? "");
+  check("the install succeeded", installed.status === 0, installLog.trim().split(NL).pop() ?? "");
 
   // What actually landed on disk, so a missing file is named rather than
   // showing up later as a search that quietly finds nothing.

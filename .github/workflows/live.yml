@@ -1,0 +1,56 @@
+name: Live
+
+# A real pi session, on a real install, on all three platforms.
+#
+# CI already packs the tarball and drives the installed engine without a model
+# (`install-check.mjs`). This job answers the remaining half: does the
+# extension load inside pi and do its tools actually answer — checked by
+# reading pi's own provider payloads, because print mode reports only final
+# text and a model replying "DONE" proves nothing.
+#
+# It costs model tokens, so it is not on every push. Tags get it because that
+# is what gets published; `workflow_dispatch` is there for when a change to
+# the install path needs proving before the tag.
+#
+# Deliberately no `pull_request` trigger: this is a public repository, and a
+# job that runs on PRs is a job someone can point at a secret.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  install:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install pi
+        run: npm install -g @earendil-works/pi-coding-agent
+      - name: A real session against a real install
+        shell: bash
+        env:
+          # pi reads this straight from the environment; there is no auth.json
+          # on a runner. Fork pull requests never receive it, which is the
+          # other half of why this workflow has no pull_request trigger.
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          # Pack the commit being built rather than whatever is on npm: the
+          # published version is a past commit that already passed this.
+          PIFY_INSTALL_FROM: pack
+        run: |
+          if [ -z "$OPENROUTER_API_KEY" ]; then
+            echo "OPENROUTER_API_KEY is not set for this run — refusing to report a pass that measured nothing."
+            exit 1
+          fi
+          node test/live/install-wire.mjs
