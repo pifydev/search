@@ -1,6 +1,6 @@
 {
   "name": "@pify/search",
-  "version": "0.4.5",
+  "version": "0.4.6",
   "description": "Fuzzy file finding and indexed content search for pi: a Rust trigram index that survives compaction, with a zero-dependency TypeScript fallback",
   "keywords": [
     "pi-package",
