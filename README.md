@@ -1,6 +1,6 @@
 # @pify/search
 
-[![npm version](https://img.shields.io/npm/v/@pify/search)](https://www.npmjs.com/package/@pify/search) [![npm downloads](https://img.shields.io/npm/dm/@pify/search)](https://www.npmjs.com/package/@pify/search)
+[![CI](https://github.com/pifydev/search/actions/workflows/ci.yml/badge.svg)](https://github.com/pifydev/search/actions/workflows/ci.yml) [![npm version](https://img.shields.io/npm/v/@pify/search)](https://www.npmjs.com/package/@pify/search) [![npm downloads](https://img.shields.io/npm/dm/@pify/search)](https://www.npmjs.com/package/@pify/search)
 
 Fuzzy file finding and indexed content search for [pi](https://github.com/earendil-works/pi) — fast when a native index is available, and working when it is not.
 
