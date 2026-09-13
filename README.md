@@ -1,5 +1,7 @@
 # @pify/search
 
+[![npm version](https://img.shields.io/npm/v/@pify/search)](https://www.npmjs.com/package/@pify/search) [![npm downloads](https://img.shields.io/npm/dm/@pify/search)](https://www.npmjs.com/package/@pify/search)
+
 Fuzzy file finding and indexed content search for [pi](https://github.com/earendil-works/pi) — fast when a native index is available, and working when it is not.
 
 Part of the [Pify suite](https://github.com/pifydev). Install with [`pify install search`](https://github.com/pifydev/cli) or `pi install npm:@pify/search`.
