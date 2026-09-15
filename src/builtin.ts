@@ -201,6 +201,19 @@ export function builtinEngine(root: string, options: BuiltinOptions = {}): Searc
     async grep(pattern: string, opts: GrepOptions = {}): Promise<Page<ContentHit>> {
       const mode = opts.mode ?? "literal";
       const caseInsensitive = opts.caseInsensitive ?? true;
+      // A broken regex is a caller mistake, not an empty tree. Constructing it
+      // here lets the failure surface as a clear error; swallowing it and
+      // returning "no match" reads as "the pattern is fine and nothing has it",
+      // which sends the caller looking in the wrong place. buildMatcher keeps
+      // its null-on-broken contract for its other callers, so the check lives
+      // here where an empty result and an unusable pattern must be told apart.
+      if (mode === "regex") {
+        try {
+          new RegExp(pattern, caseInsensitive ? "i" : "");
+        } catch (err) {
+          throw new Error(`Invalid regex pattern: ${(err as Error).message}`);
+        }
+      }
       const matcher = buildMatcher(pattern, mode, caseInsensitive);
       if (!matcher) return { items: [], total: 0, cursor: null };
 
@@ -220,7 +233,6 @@ export function builtinEngine(root: string, options: BuiltinOptions = {}): Searc
           : planForPatterns([mode === "regex" ? planForRegex(pattern, true) : planForLiteral(pattern, true)]);
       const narrowed = index.candidates(plan);
 
-      const hits: ContentHit[] = [];
       const limit = opts.limit ?? 20;
       const offset = Number.parseInt(opts.cursor ?? "0", 10);
       const start = Number.isFinite(offset) && offset > 0 ? offset : 0;
@@ -228,9 +240,23 @@ export function builtinEngine(root: string, options: BuiltinOptions = {}): Searc
       // more without reading the entire tree to find out.
       const budget = start + limit + 1;
 
-      const searchIds = narrowed === null ? [...entries.keys()] : [...narrowed];
+      // Read candidates in path order, so hits accumulate already sorted and
+      // the first `budget` of them are the true sorted prefix. Reading in scan
+      // (insertion) order and sorting only afterwards let a file that sorts
+      // early but was scanned late fall outside the budget entirely: the page
+      // then skipped real matches, and `total` undercounted them.
+      const searchIds = (narrowed === null ? [...entries.keys()] : [...narrowed]).sort(
+        (a, b) => (entries.get(a)?.path ?? "").localeCompare(entries.get(b)?.path ?? ""),
+      );
+      // A narrowed plan reads a bounded, index-selected candidate set, so every
+      // match can be collected and `total` is exact. Only the "all" fallback
+      // could read the whole tree, so it alone stops one page past the ask and
+      // reports a lower bound rather than paying for a full scan just to count.
+      const exhaustive = narrowed !== null;
+
+      const hits: ContentHit[] = [];
       for (const id of searchIds) {
-        if (hits.length >= budget) break;
+        if (!exhaustive && hits.length >= budget) break;
         const entry = entries.get(id);
         if (!entry || entry.size > MAX_SEARCHABLE_BYTES) continue;
         if (opts.glob && !entry.path.includes(opts.glob.replace(/\*/g, ""))) continue;
@@ -241,7 +267,8 @@ export function builtinEngine(root: string, options: BuiltinOptions = {}): Searc
           continue;
         }
         if (looksBinary(content)) continue;
-        for (const line of matchLines(content, matcher, budget - hits.length)) {
+        const room = exhaustive ? Number.POSITIVE_INFINITY : budget - hits.length;
+        for (const line of matchLines(content, matcher, room)) {
           hits.push({ path: entry.path, line: line.line, text: line.text });
         }
       }
