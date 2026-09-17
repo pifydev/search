@@ -17,7 +17,7 @@ mod walk;
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use rayon::prelude::*;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::RwLock;
 
@@ -28,6 +28,10 @@ struct Entry {
     absolute: PathBuf,
     size: u64,
     mtime_ms: i64,
+    /// A forgotten row is tombstoned rather than removed, so ids stay stable
+    /// and `refresh` can revive the same slot instead of pushing a duplicate.
+    /// find/grep/persist skip dead rows; reconcile can bring them back.
+    alive: bool,
 }
 
 #[napi(object)]
@@ -70,6 +74,8 @@ pub struct SearchIndex {
     content: RwLock<Index>,
     frecency: RwLock<HashMap<String, i32>>,
     cache: Option<PathBuf>,
+    /// The file cap, kept so reconcile() can re-walk with the same bound.
+    max_files: usize,
     reused: u32,
     rebuilt: u32,
 }
@@ -106,6 +112,7 @@ impl SearchIndex {
                 absolute: file.absolute.clone(),
                 size: file.size,
                 mtime_ms: file.mtime_ms,
+                alive: true,
             });
         }
 
@@ -180,6 +187,7 @@ impl SearchIndex {
             content: RwLock::new(index),
             frecency: RwLock::new(HashMap::new()),
             cache,
+            max_files: cap,
             reused: reused as u32,
             rebuilt,
         };
@@ -199,6 +207,9 @@ impl SearchIndex {
         let mut by_file = index.by_file();
         let mut files = Vec::with_capacity(by_file.len());
         for (id, entry) in entries.iter().enumerate() {
+            if !entry.alive {
+                continue;
+            }
             if let Some(trigrams) = by_file.remove(&(id as u32)) {
                 files.push(store::StoredFile {
                     rel: entry.path.clone(),
@@ -230,7 +241,10 @@ impl SearchIndex {
 
     #[napi]
     pub fn file_count(&self) -> u32 {
-        self.entries.read().map(|e| e.len() as u32).unwrap_or(0)
+        self.entries
+            .read()
+            .map(|e| e.iter().filter(|entry| entry.alive).count() as u32)
+            .unwrap_or(0)
     }
 
     #[napi]
@@ -268,6 +282,9 @@ impl SearchIndex {
                     if let Some(entry) = entries.get_mut(id as usize) {
                         entry.size = meta.len();
                         entry.mtime_ms = walk::mtime_ms(&meta);
+                        // Reviving a row a forget() tombstoned, or refreshing a
+                        // live one: either way this path is back on disk.
+                        entry.alive = true;
                     }
                     id
                 }
@@ -278,6 +295,7 @@ impl SearchIndex {
                         absolute: absolute.clone(),
                         size: meta.len(),
                         mtime_ms: walk::mtime_ms(&meta),
+                        alive: true,
                     });
                     by_path.insert(rel.clone(), id);
                     id
@@ -308,8 +326,62 @@ impl SearchIndex {
         let rel = walk::normalize(&path);
         let id = { self.by_path.read().map_err(lock_err)?.get(&rel).copied() };
         if let Some(id) = id {
+            // Drop the contents from the index, but tombstone the row rather
+            // than deleting it: the id stays valid, and the by_path mapping is
+            // kept so a later refresh of the same path revives this slot instead
+            // of appending a second row that find() would then list twice.
             self.content.write().map_err(lock_err)?.remove(id);
-            self.by_path.write().map_err(lock_err)?.remove(&rel);
+            if let Some(entry) = self.entries.write().map_err(lock_err)?.get_mut(id as usize) {
+                entry.alive = false;
+            }
+        }
+        Ok(())
+    }
+
+    /// Re-walk the tree and reconcile the index against it: read files that are
+    /// new or changed (by size+mtime, the rule the cache already trusts) and
+    /// forget files that have vanished. This is how changes made by bash, a
+    /// subagent or an external editor — none of which emit a per-file signal —
+    /// reach the index without waiting for the next session's fresh walk.
+    #[napi]
+    pub fn reconcile(&self) -> Result<()> {
+        let found = walk::collect(&self.root, self.max_files);
+        let mut seen: HashSet<String> = HashSet::with_capacity(found.len());
+
+        let mut to_refresh: Vec<String> = Vec::new();
+        {
+            let entries = self.entries.read().map_err(lock_err)?;
+            let by_path = self.by_path.read().map_err(lock_err)?;
+            for file in &found {
+                seen.insert(file.rel.clone());
+                let fresh = match by_path.get(&file.rel) {
+                    Some(&id) => entries
+                        .get(id as usize)
+                        .map(|e| e.alive && e.size == file.size && e.mtime_ms == file.mtime_ms)
+                        .unwrap_or(false),
+                    None => false,
+                };
+                if !fresh {
+                    to_refresh.push(file.rel.clone());
+                }
+            }
+        }
+
+        let to_forget: Vec<String> = {
+            let entries = self.entries.read().map_err(lock_err)?;
+            entries
+                .iter()
+                .filter(|e| e.alive && !seen.contains(&e.path))
+                .map(|e| e.path.clone())
+                .collect()
+        };
+
+        // Locks are released before these, since refresh/forget take their own.
+        for rel in to_refresh {
+            self.refresh(rel)?;
+        }
+        for rel in to_forget {
+            self.forget(rel)?;
         }
         Ok(())
     }
@@ -324,6 +396,9 @@ impl SearchIndex {
             .par_iter()
             .enumerate()
             .filter_map(|(i, entry)| {
+                if !entry.alive {
+                    return None;
+                }
                 let candidate = score::Candidate {
                     path: &entry.path,
                     frecency: frecency.get(&entry.path).copied().unwrap_or(0),
@@ -382,7 +457,21 @@ impl SearchIndex {
         };
 
         let ids: Vec<u32> = match index.candidates(&plan) {
-            Some(list) => list,
+            Some(mut list) => {
+                // A text file kept out of the trigram index (too big to index,
+                // or empty) is still searchable — the index may only narrow,
+                // never hide. Union in every alive, non-binary-by-extension file
+                // that is not indexed. Bounded, and the totals stay exact.
+                for (i, entry) in entries.iter().enumerate() {
+                    let id = i as u32;
+                    if entry.alive && !index.contains(id) && !walk::is_binary_ext(&entry.path) {
+                        list.push(id);
+                    }
+                }
+                list.sort_unstable();
+                list.dedup();
+                list
+            }
             None => (0..entries.len() as u32).collect(),
         };
 
@@ -408,7 +497,7 @@ impl SearchIndex {
             .par_iter()
             .filter_map(|&id| {
                 let entry = entries.get(id as usize)?;
-                if entry.size > walk::MAX_SEARCHABLE_BYTES {
+                if !entry.alive || entry.size > walk::MAX_SEARCHABLE_BYTES {
                     return None;
                 }
                 let bytes = std::fs::read(&entry.absolute).ok()?;

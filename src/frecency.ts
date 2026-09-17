@@ -71,6 +71,27 @@ export function frecencyOf(history: History, path: string, now: number, decay = 
   return Math.min(200, Math.round(total * 25));
 }
 
+/**
+ * Union two histories, timestamp by timestamp.
+ *
+ * The history file is shared by every pi session in a cwd, and each session
+ * holds its own in-memory copy. Writing that copy over the file whole made the
+ * last writer win and threw away the other session's accesses. Merging on write
+ * — fold my new stamps into whatever is on disk now — keeps both. Identical
+ * stamps collapse, so re-merging my own history is idempotent.
+ */
+export function mergeHistories(a: History, b: History): History {
+  const out: History = {};
+  const paths = new Set([...Object.keys(a), ...Object.keys(b)]);
+  for (const path of paths) {
+    const stamps = new Set<number>();
+    for (const t of a[path] ?? []) stamps.add(t);
+    for (const t of b[path] ?? []) stamps.add(t);
+    out[path] = [...stamps].sort((x, y) => x - y).slice(-MAX_TIMESTAMPS);
+  }
+  return out;
+}
+
 /** Drop everything that has aged out, so the file on disk stays bounded. */
 export function pruneHistory(history: History, now: number): History {
   const cutoff = now - MAX_HISTORY_DAYS * DAY_MS;

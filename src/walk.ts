@@ -10,6 +10,9 @@
  * Pure decisions, so the walker that uses them can be tested without a disk.
  */
 
+import { isAbsolute, relative, resolve } from "node:path";
+import { homedir } from "node:os";
+
 /** Directories nothing good ever comes out of. */
 export const SKIP_DIRS = new Set([
   ".git",
@@ -51,7 +54,11 @@ export const BINARY_EXTENSIONS = new Set([
   "exe", "dll", "so", "dylib", "bin", "o", "a", "lib", "obj", "pdb",
   "class", "pyc", "pyo", "wasm", "node",
   "ttf", "otf", "woff", "woff2", "eot",
-  "db", "sqlite", "sqlite3", "lock", "pack", "idx",
+  "db", "sqlite", "sqlite3", "pack", "idx",
+  // "lock" is deliberately absent: yarn.lock, Cargo.lock, bun.lock and
+  // Gemfile.lock are text the model greps often, and excluding them made a
+  // literal search for a pinned version report "no match" over a file that
+  // plainly contains it.
 ]);
 
 /** Largest file whose content is indexed — fff's cap, and for its reason. */
@@ -85,6 +92,25 @@ export function indexContent(path: string, bytes: number): boolean {
 /** Forward slashes everywhere, so a path means the same thing on Windows. */
 export function normalizePath(path: string): string {
   return path.replaceAll("\\", "/").replace(/^\.\//, "");
+}
+
+/**
+ * Turn a path as pi hands it to a tool — which its `read`/`edit`/`write`
+ * schemas document as "relative or absolute", and which may start with `~` —
+ * into the root-relative key the index stores under, or null when it points
+ * outside the tree.
+ *
+ * The bug this fixes: the frecency history was keyed on the raw tool path, so
+ * an absolute `D:/project/x/src/a.ts` never equalled the index's `src/a.ts`
+ * and the ranking boost the docs promise silently never applied.
+ */
+export function toIndexKey(root: string, rawPath: string): string | null {
+  let p = rawPath;
+  if (p === "~") p = homedir();
+  else if (p.startsWith("~/") || p.startsWith("~\\")) p = resolve(homedir(), p.slice(2));
+  const rel = normalizePath(relative(root, resolve(root, p)));
+  if (!rel || rel.startsWith("..") || isAbsolute(rel)) return null;
+  return rel;
 }
 
 /**

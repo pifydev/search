@@ -104,6 +104,12 @@ impl Index {
         self.indexed.len()
     }
 
+    /// Whether a file's contents are in the index. A listed file that is not is
+    /// text kept out of it (too big, empty) and still a grep candidate.
+    pub fn contains(&self, file: u32) -> bool {
+        self.indexed.contains(&file)
+    }
+
     pub fn add(&mut self, file: u32, trigrams: &[Trigram]) {
         if self.indexed.contains(&file) {
             self.remove(file);

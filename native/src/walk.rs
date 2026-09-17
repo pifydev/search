@@ -69,8 +69,15 @@ pub fn index_content(rel: &str, size: u64) -> bool {
     if size == 0 || size > MAX_INDEXABLE_BYTES {
         return false;
     }
+    !is_binary_ext(rel)
+}
+
+/// Whether an extension marks a file as never worth a text search. A file that
+/// is text by extension but kept out of the trigram index (too big, empty) is
+/// still a grep candidate; a binary one is not.
+pub fn is_binary_ext(rel: &str) -> bool {
     let ext = extension_of(rel).to_ascii_lowercase();
-    !BINARY_EXTENSIONS.contains(&ext.as_str())
+    BINARY_EXTENSIONS.contains(&ext.as_str())
 }
 
 /// A NUL byte in the first few kilobytes: cheaper and more reliable than

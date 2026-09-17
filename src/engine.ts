@@ -37,6 +37,14 @@ export interface Page<T> {
   items: T[];
   total: number;
   cursor: string | null;
+  /**
+   * Whether `total` is the true count or a lower bound. The only path that
+   * cannot afford to count everything is builtin's unindexed "all" fallback,
+   * which stops one page past the ask; it reports `false` so the formatter can
+   * say "at least N" instead of stating a page budget as if it were the answer.
+   * Absent means exact.
+   */
+  exact?: boolean;
 }
 
 export type GrepMode = "literal" | "regex" | "fuzzy";
@@ -64,6 +72,13 @@ export interface SearchEngine {
   /** Re-read one path after a change, when the engine can. */
   refresh?(path: string): void;
   forget?(path: string): void;
+  /**
+   * Re-walk the tree and reconcile the index with it — pick up whatever bash,
+   * a subagent or an external editor changed without a per-file signal. The
+   * builtin engine leaves this undefined because its fs.watch already tracks
+   * those changes live; the native engine has no watcher of its own.
+   */
+  reconcile?(): void;
   dispose(): void;
   /** How many files the index holds, when the engine can say. */
   indexed?(): number;

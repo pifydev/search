@@ -17,12 +17,13 @@
 
 import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync, statSync, watch, type FSWatcher } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import type { ContentHit, FileHit, GrepOptions, Page, SearchEngine, FindOptions } from "./engine.ts";
+import { ignoreMatches, normalizePath, parseIgnore, skipDirectory } from "./walk.ts";
 
 interface NativePage<T> {
   items: T[];
@@ -43,6 +44,8 @@ interface NativeIndex {
   touch(path: string): void;
   refresh(path: string): void;
   forget(path: string): void;
+  /** Re-walk the tree and reconcile against the index: new, changed, gone. */
+  reconcile(): void;
   find(query: string, limit: number, offset: number, nowMs: number): NativePage<FileHit>;
   grep(
     pattern: string,
@@ -149,10 +152,66 @@ export function loadNative(root: string, maxFiles?: number): SearchEngine | null
     return null;
   }
 
+  // The Rust core has no watcher of its own, so without this it only ever
+  // learned about files edit/write changed — anything bash, a subagent, or an
+  // external editor created, deleted or rewrote stayed invisible, which is the
+  // one false negative the index is meant never to produce. The filtering
+  // mirrors the builtin walk so the watcher and the walk agree on what belongs.
+  const watchers: FSWatcher[] = [];
+  const ignorePatterns = (() => {
+    try {
+      return parseIgnore(readFileSync(join(root, ".gitignore"), "utf8"));
+    } catch {
+      return [];
+    }
+  })();
+  const ignored = (rel: string, isDir: boolean): boolean => {
+    if (ignorePatterns.length === 0 || !rel || rel.startsWith("..")) return false;
+    return ignoreMatches(ignorePatterns, isDir ? `${rel}/` : rel);
+  };
+  const startWatching = (): void => {
+    try {
+      const watcher = watch(root, { recursive: true }, (_event, filename) => {
+        if (!filename) return;
+        const rel = normalizePath(String(filename));
+        if (rel.split("/").some((part) => skipDirectory(part))) return;
+        if (ignored(rel, false)) return;
+        const absolute = join(root, String(filename));
+        // Stat first, so a napi error from refresh() can never be mistaken for
+        // "the file is gone" and wrongly forget a file that is still there.
+        let stats;
+        try {
+          stats = statSync(absolute);
+        } catch {
+          // Gone: a delete, a rename away, or something we may not read.
+          try {
+            index.forget(rel);
+          } catch {
+            // A file we cannot forget stays as it was until the next reconcile.
+          }
+          return;
+        }
+        if (!stats.isFile()) return;
+        try {
+          index.refresh(rel);
+        } catch {
+          // A file we cannot re-read stays as it was.
+        }
+      });
+      watchers.push(watcher);
+    } catch {
+      // Recursive watching is not available everywhere; reconcile() on a bash
+      // result and the fresh walk at every session start still keep it honest.
+    }
+  };
+  startWatching();
+
   const pageOf = <T>(page: NativePage<T>): Page<T> => ({
     items: page.items,
     total: page.total,
     cursor: page.next >= 0 ? String(page.next) : null,
+    // Native scans every candidate it is given, so its counts are always exact.
+    exact: true,
   });
   const offsetOf = (cursor?: string) => {
     const n = Number.parseInt(cursor ?? "0", 10);
@@ -200,6 +259,13 @@ export function loadNative(root: string, maxFiles?: number): SearchEngine | null
         // ditto
       }
     },
+    reconcile() {
+      try {
+        index.reconcile();
+      } catch {
+        // A reconcile that fails leaves the index as fresh as its last event.
+      }
+    },
     indexed() {
       try {
         return index.fileCount();
@@ -215,6 +281,14 @@ export function loadNative(root: string, maxFiles?: number): SearchEngine | null
       }
     },
     dispose() {
+      for (const watcher of watchers) {
+        try {
+          watcher.close();
+        } catch {
+          // already closed
+        }
+      }
+      watchers.length = 0;
       // Deliberately not saving here. Anything `refresh` changed during the
       // session has a new mtime on disk, so the next start sees the mismatch
       // and re-reads those files anyway — writing the whole index out at exit

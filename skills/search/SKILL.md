@@ -14,7 +14,7 @@ every time they run.
 `fffind query="auth route"` — fuzzy and typo-tolerant. Give a fragment of the
 name rather than a guess at the full path: `worktre entr` finds
 `worktree/src/enter.ts`. Results are ranked, so the first one is usually the
-one you meant — recently edited and git-modified files rank higher.
+one you meant — recently edited files rank higher.
 
 ## Searching contents
 

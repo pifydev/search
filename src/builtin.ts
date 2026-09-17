@@ -17,7 +17,9 @@ import { rankAndPage, type Candidate } from "./fuzzy.ts";
 import { buildMatcher, looksBinary, matchLines } from "./match.ts";
 import { TrigramIndex, planForLiteral, planForPatterns, planForRegex } from "./trigram.ts";
 import {
+  BINARY_EXTENSIONS,
   MAX_SEARCHABLE_BYTES,
+  extensionOf,
   ignoreMatches,
   includeFile,
   parseIgnore,
@@ -52,6 +54,7 @@ export function builtinEngine(root: string, options: BuiltinOptions = {}): Searc
   let history: History = options.history ?? {};
   let nextId = 1;
   let scanned = false;
+  let scanning: Promise<boolean> | null = null;
 
   function add(absolute: string, size: number, mtimeMs: number): void {
     const path = normalizePath(relative(root, absolute));
@@ -115,29 +118,52 @@ export function builtinEngine(root: string, options: BuiltinOptions = {}): Searc
     return ignoreMatches(ignorePatterns, isDir ? `${rel}/` : rel);
   }
 
-  function scan(dir: string, depth = 0): void {
-    if (entries.size >= maxFiles || depth > 24) return;
-    let listing: string[];
-    try {
-      listing = readdirSync(dir);
-    } catch {
-      return;
-    }
-    for (const name of listing) {
+  /**
+   * Walk the tree cooperatively.
+   *
+   * The fs calls stay synchronous — `fs.promises` per entry is several times
+   * slower through the threadpool — but the walk is an explicit stack rather
+   * than recursion, and it yields the event loop every ~200 files. That is the
+   * difference between a monorepo's first index freezing the TUI for seconds
+   * (readdirSync + statSync + readFileSync + trigram extraction for up to 50k
+   * files, all before the first prompt renders) and the same work spread across
+   * ticks while keystrokes and other extensions keep running. `find`/`grep`
+   * read from the maps as they fill, so a search during the build still answers
+   * from the part indexed so far.
+   */
+  async function scan(rootDir: string): Promise<void> {
+    const stack: Array<{ dir: string; depth: number }> = [{ dir: rootDir, depth: 0 }];
+    let sinceYield = 0;
+    while (stack.length > 0) {
       if (entries.size >= maxFiles) return;
-      const absolute = join(dir, name);
-      let stats;
+      const { dir, depth } = stack.pop()!;
+      if (depth > 24) continue;
+      let listing: string[];
       try {
-        stats = statSync(absolute);
+        listing = readdirSync(dir);
       } catch {
         continue;
       }
-      if (stats.isDirectory()) {
-        if (skipDirectory(name) || ignored(absolute, true)) continue;
-        scan(absolute, depth + 1);
-      } else if (stats.isFile()) {
-        if (ignored(absolute, false)) continue;
-        add(absolute, stats.size, stats.mtimeMs);
+      for (const name of listing) {
+        if (entries.size >= maxFiles) return;
+        const absolute = join(dir, name);
+        let stats;
+        try {
+          stats = statSync(absolute);
+        } catch {
+          continue;
+        }
+        if (stats.isDirectory()) {
+          if (skipDirectory(name) || ignored(absolute, true)) continue;
+          stack.push({ dir: absolute, depth: depth + 1 });
+        } else if (stats.isFile()) {
+          if (ignored(absolute, false)) continue;
+          add(absolute, stats.size, stats.mtimeMs);
+        }
+        if (++sinceYield >= 200) {
+          sinceYield = 0;
+          await new Promise((resolve) => setImmediate(resolve));
+        }
       }
     }
   }
@@ -177,13 +203,20 @@ export function builtinEngine(root: string, options: BuiltinOptions = {}): Searc
 
   return {
     name: "builtin",
-    async ready() {
-      if (!scanned) {
-        scan(root);
-        startWatching();
-        scanned = true;
+    ready() {
+      // Guarded by a single promise so a concurrent first search cannot start a
+      // second walk over the same tree. The watcher is armed only once the walk
+      // is complete, since a partial index plus live events would race.
+      if (scanned) return Promise.resolve(true);
+      if (!scanning) {
+        scanning = (async () => {
+          await scan(root);
+          startWatching();
+          scanned = true;
+          return true;
+        })();
       }
-      return true;
+      return scanning;
     },
     async find(query: string, opts: FindOptions = {}): Promise<Page<FileHit>> {
       const now = Date.now();
@@ -233,6 +266,19 @@ export function builtinEngine(root: string, options: BuiltinOptions = {}): Searc
           : planForPatterns([mode === "regex" ? planForRegex(pattern, true) : planForLiteral(pattern, true)]);
       const narrowed = index.candidates(plan);
 
+      // A text file too big to index (2–10MB) or one whose extension kept it
+      // out of the trigram index is still supposed to be searchable — the index
+      // may only *narrow*, never hide. So union in every listed id that is not
+      // in the content index and not binary-by-extension; they are few, the set
+      // stays bounded, and `exhaustive`/`total` stay exact.
+      if (narrowed !== null) {
+        for (const entry of entries.values()) {
+          if (!index.has(entry.id) && !BINARY_EXTENSIONS.has(extensionOf(entry.path))) {
+            narrowed.add(entry.id);
+          }
+        }
+      }
+
       const limit = opts.limit ?? 20;
       const offset = Number.parseInt(opts.cursor ?? "0", 10);
       const start = Number.isFinite(offset) && offset > 0 ? offset : 0;
@@ -275,7 +321,16 @@ export function builtinEngine(root: string, options: BuiltinOptions = {}): Searc
 
       hits.sort((a, b) => a.path.localeCompare(b.path) || a.line - b.line);
       const items = hits.slice(start, start + limit);
-      return { items, total: hits.length, cursor: start + items.length < hits.length ? String(start + items.length) : null };
+      // Exact whenever every match was read: a narrowed plan reads its whole
+      // candidate set, and even the "all" fallback is exact if it finished
+      // under budget. Only an "all" scan that hit the budget is a lower bound.
+      const exact = exhaustive || hits.length < budget;
+      return {
+        items,
+        total: hits.length,
+        cursor: start + items.length < hits.length ? String(start + items.length) : null,
+        exact,
+      };
     },
     touch(path: string) {
       history = noteAccess(history, normalizePath(path), Date.now());

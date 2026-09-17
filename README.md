@@ -22,7 +22,7 @@ The other half is the shape of the question. `find` wants a glob; people want *"
 | `limit` | number, optional | Per page, default 20 |
 | `cursor` | string, optional | From a previous call |
 
-`worktre entr` finds `worktree/src/enter.ts`. Results are ranked: an exact filename beats a matching stem, which beats a prefix, which beats a directory that merely contains the query — and recently edited or git-modified files rise, because that is what you are probably looking for.
+`worktre entr` finds `worktree/src/enter.ts`. Results are ranked: an exact filename beats a matching stem, which beats a prefix, which beats a directory that merely contains the query — and recently edited files rise, because that is what you are probably looking for.
 
 ### `ffgrep`
 
@@ -40,6 +40,8 @@ Three modes because three different questions get asked: the exact string, a sha
 **native** — this package's own Rust core, `native/`, built with napi. It indexes this suite (417 files) in about **40ms** cold, and a literal search then reads the **5** files the trigram index says could match rather than all 417. Searches come back in about a millisecond. Its index is [stored between sessions](#the-index-survives-the-process), so the second start does not pay for the first.
 
 **builtin** — pure TypeScript, no dependencies, no binary. A trigram index for content, a fuzzy scorer for paths, an `fs.watch` subscription to stay current.
+
+Both stay current the same way: an `fs.watch` subscription for files that change under them, plus a re-walk after a `bash` command (debounced) to reconcile anything created, deleted or moved without a per-file signal — a `sed -i`, a `git checkout`, a formatter, a scaffolder. And the first index is built cooperatively: the walk yields the event loop rather than freezing the TUI for the seconds a large monorepo would otherwise take, and a search that arrives before it finishes serves from the part indexed so far and says the index is still building.
 
 The fallback is the point. A native binary is a promise you cannot always keep: an unsupported platform, a locked-down install, a blocked postinstall — any of those, and a binary-only search extension is one that silently does nothing.
 
@@ -74,6 +76,8 @@ Each run states which engine it proved. Today all three say *"no native binary i
 Every overlapping three-byte window of every text file is a *trigram*, packed into one number and mapped to the files containing it. A search extracts the trigrams its pattern must contain and intersects those posting lists, so only files that could match are ever read. (The design is [tgrep](https://github.com/microsoft/tgrep)'s, which reports up to 52× over ripgrep on very large trees.)
 
 The index only ever **narrows**; every surviving candidate is still matched for real, so a wrong candidate costs time and never correctness. The rule that makes it safe: a pattern with nothing indexable — `\d+`, a fuzzy query, one branch of an alternation that could match anywhere — reports "no candidate set is safe" and everything is read. Confusing *that* with "nothing matched" is how an index starts silently hiding results, so the two are different values throughout.
+
+A text file too large to index (over 2MB, up to the 10MB search cap) has no trigrams, so it would fall outside every narrowed candidate set. Rather than let it become invisible to a literal or regex search, such files — and any text file whose extension is not a known binary one — are unioned back into the candidate set and read. A lower-bound page (the un-narrowed "all" path, which stops one page past what you asked for rather than scanning the whole tree to count) is reported as *"at least N"*, never as an exact total it did not actually compute.
 
 ## The index survives the process
 
@@ -111,7 +115,7 @@ The two engines are checked against each other on this, not just asserted: a tre
 
 ## Ranking
 
-Frecency decays on a three-day half-life — an agent session is shorter and more concentrated than a human's week, so yesterday's file should not outrank today's. Every `read`, `edit` or `write` in the session counts as an access. History is capped at seven days and 128 timestamps per file, so the store cannot grow without bound.
+Frecency decays on a three-day half-life — an agent session is shorter and more concentrated than a human's week, so yesterday's file should not outrank today's. Every `read`, `edit` or `write` in the session counts as an access, keyed by the file's root-relative path whether the tool was called with a relative or an absolute path. History is capped at seven days and 128 timestamps per file, so the store cannot grow without bound. The builtin engine persists this history to the platform cache directory (merged on write, so two sessions in one repo do not overwrite each other); the **native** engine keeps its frecency in memory for the session only — undecayed and not persisted — so across sessions the two engines can order equal-name matches slightly differently.
 
 ## pi's own tools are left alone
 
